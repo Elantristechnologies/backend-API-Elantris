@@ -1,4 +1,6 @@
-﻿namespace HRPortal.API.DTOs
+﻿using System.ComponentModel.DataAnnotations.Schema;
+
+namespace HRPortal.API.DTOs
 {
     public class EmployeeCreateDto
     {
@@ -7,9 +9,12 @@
         public string EmailId { get; set; }
         public string Phone { get; set; }
         public string EmergencyContact { get; set; }
-        public string Department { get; set; }
-        public string Designation { get; set; }
-        public DateOnly DateOfJoining { get; set; }
-        public string EmploymentType { get; set; }
+
+        public int DepartmentID { get; set; }
+        public int DesignationID { get; set; }
+        [Column("date_of_joining")]
+        public DateTime DateOfJoining { get; set; }
+
+        public string CategoryId { get; set; }   // ✔ correct
     }
 }

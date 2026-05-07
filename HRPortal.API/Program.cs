@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.SqlServer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using System.Text;
+using Microsoft.AspNetCore.Authorization;
 var builder = WebApplication.CreateBuilder(args);
 
 // allow localhost + LAN IP
@@ -38,8 +39,7 @@ builder.Services.AddAuthentication(options =>
         IssuerSigningKey = new SymmetricSecurityKey(key)
     };
 });
-
-
+builder.Services.AddAuthorization();
 
 // CORS
 builder.Services.AddCors(options =>
@@ -51,6 +51,10 @@ builder.Services.AddCors(options =>
               .AllowAnyMethod();
     });
 });
+
+ 
+
+
 
 // DB - CHANGED FROM Npgsql TO SQL Server
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
@@ -68,6 +72,8 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 
+
+
 var app = builder.Build();
 app.UseSwagger(c =>
 {
@@ -83,11 +89,21 @@ app.UseSwagger(c =>
     });
 });
 
+
+
 app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "HRPortal API v1");
     c.RoutePrefix = "swagger";
 });
+
+
+
+
+
+
+
+
 
 app.UseRouting();
 
@@ -99,3 +115,4 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+

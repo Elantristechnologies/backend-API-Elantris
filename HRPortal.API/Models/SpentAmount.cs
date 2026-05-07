@@ -65,5 +65,8 @@ namespace HRPortal.API.Models
 
         [Column("isactive")]
         public bool IsActive { get; set; }
+
+        [Column("employee_id")]
+        public int? employee_id { get; set; }
     }
 }

@@ -11,8 +11,8 @@ namespace HRPortal.API.Models
         [Column("id")]
         public int Id { get; set; }
 
-        [Column("hr_name")]
-        public string HrName { get; set; }
+        [Column("employee_code")]
+        public string empcode { get; set; }
 
         [Column("email")]
         public string Email { get; set; }
@@ -26,10 +26,6 @@ namespace HRPortal.API.Models
         [Column("created_at")]
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
-        public byte[]? ProfilePhoto { get; set; }
-
-        public string? ReportingManager1 { get; set; }
-
-        public string? ReportingManager2 { get; set; }
+   
     }
 }

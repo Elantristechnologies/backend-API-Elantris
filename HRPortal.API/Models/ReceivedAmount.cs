@@ -16,7 +16,19 @@ namespace HRPortal.API.Models
 
         [Column("amount")]
         public decimal Amount { get; set; }
+
         [Column("admin_id")]
         public int Admin_Id { get; set; }
+
+        [Column("isactive")]
+        public bool IsActive { get; set; }
+
+        // 🔥 ADD THIS
+        [Column("created_by")]
+        public int? CreatedBy { get; set; }
+
+        [Column("created_to")]
+        public int? CreatedTo { get; set; }
+
     }
 }

@@ -1,4 +1,5 @@
 ﻿
+using HRPortal.API.DTOs;
 using HRPortal.API.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -29,6 +30,9 @@ namespace HRPortal.API.Data
         public DbSet<EmployeePayrollSummary> EmployeePayrollSummaries { get; set; }
         public DbSet<CompanyPayrollOverview> CompanyPayrollOverviews { get; set; }
 
+        // ---------- for dropdown register emp--------
+        public DbSet<DepartmentMaster> Department_Master { get; set; }
+        public DbSet<CategoryMaster> Category_Master { get; set; }
 
         //-----------------------------Travles -----------------------------
 
@@ -42,16 +46,18 @@ namespace HRPortal.API.Data
         public DbSet<DraftClaimView> DraftClaims { get; set; }
         public DbSet<LocalPurchase> LocalPurchases { get; set; }
 
-  
+
 
         //--------------------Expenses tracker ----------
-
-
+        public DbSet<ExpenseMaster> ExpenseMaster { get; set; }
+        
         public DbSet<ReceivedAmount> ReceivedAmounts { get; set; }
         public DbSet<SpentAmount> SpentAmounts { get; set; }
         public DbSet<SpentDetails> SpentDetails { get; set; }
 
-        //-----------Purchasetype ----------
+        public DbSet<SpentDetailsDto> SpentDetailsDto { get; set; } //same name ahdaa error
+
+        //----------Purchasetype ---------
         public DbSet<PurchaseType> PurchaseTypes { get; set; }
 
 
@@ -59,11 +65,19 @@ namespace HRPortal.API.Data
 
         public DbSet<CashVoucher> CashVouchers { get; set; }
 
-
-
+        //----access control-----
+        public DbSet<CompanyexpenseAccesses> CompanyexpenseAccesses { get; set; }
       
+        //----expense add amount popup --
+
+        public DbSet<EmployeeMaster> EmployeeMaster { get; set; }
+
+
+
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
+            modelBuilder.Entity<EmployeeAccessResultsdto>().HasNoKey();
 
             modelBuilder.Entity<EmployeeAddress>()
                 .HasOne(a => a.Employee)
@@ -121,6 +135,9 @@ namespace HRPortal.API.Data
             modelBuilder.Entity<Vehicle>()
                 .Property(v => v.VehicleId)
                 .ValueGeneratedOnAdd();
+
+
+            modelBuilder.Entity<CompanyexpenseAccesses>().HasNoKey();
         }
     }
 }   
