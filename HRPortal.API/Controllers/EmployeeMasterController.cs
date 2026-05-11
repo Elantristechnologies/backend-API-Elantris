@@ -351,26 +351,43 @@ namespace HRPortal.API.Controllers
             await _context.SaveChangesAsync();
 
             return Ok("Profile Updated");
+
         }
 
-        // all employee dashboard la display pannum 
+        // all employee dashboard la display pannum Muthu
         [HttpGet]
-        public async Task<IActionResult> GetEmployees()
+        public async Task<IActionResult> GetEmployees() //Dhanush
         {
             try
             {
-                var employees = await _context.EmployeeMasters
-                    .Select(e => new
-                    {
-                        e.EmpId,
-                        e.EmployeeCode,
-                        e.FullName,
-                        e.EmailId,
-                        e.DepartmentId,
-                        e.DesignationId,
-                        e.DateOfJoining
-                    })
-                    .ToListAsync();
+                var employees = await (
+            from e in _context.EmployeeMasters
+
+            join d in _context.Designations
+                on e.DesignationId equals d.Id into desigJoin
+            from d in desigJoin.DefaultIfEmpty()
+
+            join dept in _context.Department_Master
+                on e.DepartmentId equals dept.DepartmentId into deptJoin
+            from dept in deptJoin.DefaultIfEmpty()
+
+            select new
+            {
+                empId = e.EmpId,
+                employeeCode = e.EmployeeCode,
+                fullName = e.FullName,
+                emailId = e.EmailId,
+
+                departmentId = e.DepartmentId,
+                departmentName = dept.DepartmentName,
+                department = dept != null ? dept.DepartmentName : null,   // ✅ department name
+
+                designationId = e.DesignationId,
+                designation = d != null ? d.Name : null,        // ✅ designation name
+
+                dateOfJoining = e.DateOfJoining
+            }
+        ).ToListAsync();
 
                 return Ok(employees);
             }
@@ -384,6 +401,35 @@ namespace HRPortal.API.Controllers
             }
         }
 
+
+
+        // GET: api/Designation   M]
+        [HttpGet("Designation")]
+        public async Task<IActionResult> GetDesignations()
+        {
+            try
+            {
+                var data = await _context.Designations
+                    .OrderBy(x => x.Id)
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Designation list fetched successfully",
+                    data = data
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Something went wrong",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
 
         // HR- profile display pannum
         [HttpGet("profile/{id}")]
@@ -412,7 +458,7 @@ namespace HRPortal.API.Controllers
         }
 
         // employee register 
-        [Authorize]
+        // [Authorize]    Muthu
         [HttpPost("register")]
         public async Task<IActionResult> CreateEmployee([FromBody] EmployeeCreateDto dto)
         {
@@ -461,6 +507,124 @@ namespace HRPortal.API.Controllers
                 {
                     message = "Something went wrong",
                     error = ex.Message
+                });
+            }
+        }
+
+        // Employment Information added    Muthu
+        [HttpPost("{id}/employment-information")]
+        public async Task<IActionResult> SaveEmploymentInformation(
+    int id,
+    [FromBody] EmployeeEmploymentInformationDto dto)
+        {
+            try
+            {
+                var employee = await _context.EmployeeMasters
+                    .FirstOrDefaultAsync(e => e.EmpId == id);
+
+                if (employee == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Employee not found"
+                    });
+                }
+
+
+                var employmentInfo = await _context.EmployeeEmploymentInformations
+                    .FirstOrDefaultAsync(e => e.EmpId == id);
+
+
+                if (employmentInfo == null)
+                {
+                    employmentInfo = new EmployeeEmploymentInformation
+                    {
+                        EmpId = id
+                    };
+
+                    await _context.EmployeeEmploymentInformations
+                        .AddAsync(employmentInfo);
+                }
+
+
+                employmentInfo.EmployeeType = dto.EmployeeType;
+                employmentInfo.DesignationId = dto.DesignationId;
+                employmentInfo.ReportingManager = dto.ReportingManager;
+                employmentInfo.DateOfJoining = dto.DateOfJoining;
+                employmentInfo.ProbationPeriod = dto.ProbationPeriod;
+                employmentInfo.ConfirmationDate = dto.ConfirmationDate;
+                employmentInfo.EmployeeGradeLevel = dto.EmployeeGradeLevel;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Employment information saved successfully"
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Something went wrong",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+        //  Employment Information GET Muthu
+        [HttpGet("{id}/employment-information")]
+        public async Task<IActionResult> GetEmploymentInformation(int id)
+        {
+            try
+            {
+                var employmentInfo = await _context.EmployeeEmploymentInformations
+                    .Where(e => e.EmpId == id)
+                    .Select(e => new
+                    {
+                        e.Id,
+                        e.EmpId,
+                        e.EmployeeType,
+
+                        designation = _context.Designations
+                            .Where(d => d.Id == e.DesignationId)
+                            .Select(d => d.Name)
+                            .FirstOrDefault(),
+
+                        e.DesignationId,
+                        e.ReportingManager,
+                        e.DateOfJoining,
+                        e.ProbationPeriod,
+                        e.ConfirmationDate,
+                        e.EmployeeGradeLevel
+                    })
+                    .FirstOrDefaultAsync();
+
+                if (employmentInfo == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Employment information not found"
+                    });
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Employment information fetched successfully",
+                    data = employmentInfo
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Something went wrong",
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
@@ -519,7 +683,7 @@ namespace HRPortal.API.Controllers
 
 
         // employee address add only added 
-        [Authorize]
+        // [Authorize]  muthu
         [HttpPost("{id}/address")]
         public async Task<IActionResult> SaveAddress(int id, [FromBody] EmployeeAddressDto dto)
         {
@@ -573,8 +737,74 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
+        // set address Muthu
+        [HttpGet("{id}/address")]
+        public async Task<IActionResult> GetAddress(int id)
+        {
+            try
+            {
+                var employee = await _context.EmployeeMasters
+                    .FirstOrDefaultAsync(e => e.EmpId == id);
+
+                if (employee == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Employee not found"
+                    });
+                }
+
+                var address = await _context.EmployeeAddresses
+                    .FirstOrDefaultAsync(a => a.EmpId == id);
+
+                if (address == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Address not found"
+                    });
+                }
+
+                var response = new
+                {
+                    currentDoorNo = address.CurrentDoorNo,
+                    currentStreet = address.CurrentStreet,
+                    currentArea = address.CurrentArea,
+                    currentCity = address.CurrentCity,
+                    currentState = address.CurrentState,
+                    currentPincode = address.CurrentPincode,
+                    currentCountry = address.CurrentCountry,
+
+                    permanentDoorNo = address.PermanentDoorNo,
+                    permanentStreet = address.PermanentStreet,
+                    permanentArea = address.PermanentArea,
+                    permanentCity = address.PermanentCity,
+                    permanentState = address.PermanentState,
+                    permanentPincode = address.PermanentPincode,
+                    permanentCountry = address.PermanentCountry
+                };
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Address fetched successfully",
+                    data = response
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Something went wrong",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
         // employee personal details only added 
-        [Authorize]
+        //[Authorize]   muthu  full code
         [HttpPost("{id}/personal-details")]
         public async Task<IActionResult> SavePersonalDetails(int id, [FromBody] EmployeePersonalDetailsDto dto)
         {
@@ -584,7 +814,12 @@ namespace HRPortal.API.Controllers
                     .FirstOrDefaultAsync(e => e.EmpId == id);
 
                 if (employee == null)
-                    return NotFound("Employee not found");
+                {
+                    return NotFound(new
+                    {
+                        message = "Employee not found"
+                    });
+                }
 
                 var personal = await _context.EmployeePersonalDetails
                     .FirstOrDefaultAsync(p => p.EmpId == id);
@@ -596,7 +831,7 @@ namespace HRPortal.API.Controllers
                         EmpId = id
                     };
 
-                    _context.EmployeePersonalDetails.Add(personal);
+                    await _context.EmployeePersonalDetails.AddAsync(personal);
                 }
 
                 personal.FirstName = dto.FirstName;
@@ -608,7 +843,10 @@ namespace HRPortal.API.Controllers
 
                 if (dto.DateOfBirth.HasValue)
                 {
-                    personal.DateOfBirth = DateTime.SpecifyKind(dto.DateOfBirth.Value, DateTimeKind.Utc);
+                    personal.DateOfBirth = DateTime.SpecifyKind(
+                        dto.DateOfBirth.Value,
+                        DateTimeKind.Utc
+                    );
                 }
 
                 personal.MaritalStatus = dto.MaritalStatus;
@@ -618,77 +856,144 @@ namespace HRPortal.API.Controllers
 
                 await _context.SaveChangesAsync();
 
-                return Ok("Personal details saved successfully");
+                return Ok(new
+                {
+                    success = true,
+                    message = "Personal details saved successfully"
+                });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
+                    success = false,
                     message = "Something went wrong",
-                    error = ex.Message
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        //EDIT EDUCSATION   MUTHU  full code  "AddMultipleEducation alternative "
+        [HttpPut("education/{educationId}")]
+        public async Task<IActionResult> UpdateEducation(
+    int educationId,
+    [FromBody] EmployeeEducationDto dto)
+        {
+            try
+            {
+                var education = await _context.EmployeeEducations
+                    .FirstOrDefaultAsync(e => e.Id == educationId);
+
+                if (education == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Education record not found"
+                    });
+                }
+
+                // UPDATE SAME ROW
+                education.Qualification = dto.Qualification;
+                education.DegreeName = dto.DegreeName;
+                education.University = dto.University;
+                education.YearOfPassing = dto.YearOfPassing;
+                education.Percentage = dto.Percentage;
+                education.Certifications = dto.Certifications;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Education updated successfully"
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Something went wrong",
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
 
 
         // employee education only added database 
-        [Authorize]
+        //  [Authorize]  muthu  full code
         [HttpPost("{id}/education/bulk")]
-        public async Task<IActionResult> AddMultipleEducation(
+        public async Task<IActionResult> SaveEducationBulk(
      int id,
      [FromBody] List<EmployeeEducationDto> dtos)
         {
             try
             {
-                if (dtos == null || !dtos.Any())
-                    return BadRequest("Education list is empty");
-
                 var employeeExists = await _context.EmployeeMasters
                     .AnyAsync(e => e.EmpId == id);
 
                 if (!employeeExists)
-                    return NotFound("Employee not found");
-
-                var newEducations = new List<EmployeeEducation>();
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Employee not found"
+                    });
+                }
 
                 foreach (var dto in dtos)
                 {
-                    var exists = await _context.EmployeeEducations.AnyAsync(e =>
-                        e.EmpId == id &&
-                        e.Qualification == dto.Qualification &&
-                        e.DegreeName == dto.DegreeName &&
-                        e.University == dto.University &&
-                        e.YearOfPassing == dto.YearOfPassing);
 
-                    if (!exists)
+                    if (dto.Id > 0)
                     {
-                        newEducations.Add(new EmployeeEducation
+                        var existingEducation = await _context.EmployeeEducations
+                            .FirstOrDefaultAsync(e =>
+                                e.Id == dto.Id &&
+                                e.EmpId == id);
+
+                        if (existingEducation != null)
                         {
-                            EmpId = id,
-                            Qualification = dto.Qualification,
-                            DegreeName = dto.DegreeName,
-                            University = dto.University,
-                            YearOfPassing = dto.YearOfPassing,
-                            Percentage = dto.Percentage,
-                            Certifications = dto.Certifications
-                        });
+                            existingEducation.Qualification = dto.Qualification;
+                            existingEducation.DegreeName = dto.DegreeName;
+                            existingEducation.University = dto.University;
+                            existingEducation.YearOfPassing = dto.YearOfPassing;
+                            existingEducation.Percentage = dto.Percentage;
+                            existingEducation.Certifications = dto.Certifications;
+
+                            continue;
+                        }
                     }
+
+                    var newEducation = new EmployeeEducation
+                    {
+                        EmpId = id,
+                        Qualification = dto.Qualification,
+                        DegreeName = dto.DegreeName,
+                        University = dto.University,
+                        YearOfPassing = dto.YearOfPassing,
+                        Percentage = dto.Percentage,
+                        Certifications = dto.Certifications
+                    };
+
+                    await _context.EmployeeEducations.AddAsync(newEducation);
                 }
 
-                if (!newEducations.Any())
-                    return BadRequest("All education records already exist");
-
-                _context.EmployeeEducations.AddRange(newEducations);
                 await _context.SaveChangesAsync();
 
-                return Ok($"{newEducations.Count} education record(s) added successfully");
+                return Ok(new
+                {
+                    success = true,
+                    message = "Education details saved successfully"
+                });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
+                    success = false,
                     message = "Something went wrong",
-                    error = ex.Message
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
@@ -849,9 +1154,96 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
+        [HttpDelete("{id}/documents/{documentType}")] // muthu  full code 
+        public async Task<IActionResult> DeleteEmployeeDocument(
+    int id,
+    string documentType)
+        {
+            try
+            {
+                var documents = await _context.EmployeeDocuments
+                    .FirstOrDefaultAsync(d => d.EmployeeId == id);
+
+                if (documents == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Documents not found"
+                    });
+                }
+
+                switch (documentType.ToLower())
+                {
+                    case "resume":
+                        documents.Resume = null;
+                        break;
+
+                    case "offerletter":
+                        documents.OfferLetter = null;
+                        break;
+
+                    case "appointmentletter":
+                        documents.AppointmentLetter = null;
+                        break;
+
+                    case "idproof":
+                        documents.IdProof = null;
+                        break;
+
+                    case "addressproof":
+                        documents.AddressProof = null;
+                        break;
+
+                    case "educationalcertificates":
+                        documents.EducationalCertificates = null;
+                        break;
+
+                    case "experienceletters":
+                        documents.ExperienceLetters = null;
+                        break;
+
+                    case "passportphotos":
+                        documents.PassportPhotos = null;
+                        break;
+
+                    case "bankaccountdetails":
+                        documents.BankAccountDetails = null;
+                        break;
+
+                    case "signednda":
+                        documents.SignedNda = null;
+                        break;
+
+                    default:
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "Invalid document type"
+                        });
+                }
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = $"{documentType} deleted successfully"
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "An error occurred while deleting document",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
 
         // GET Employee Documents
-        [HttpGet("{id}/documents")]
+        [HttpGet("{id}/documents")] // muthu  full code
         public async Task<IActionResult> GetEmployeeDocuments(int id)
         {
             try
@@ -860,16 +1252,28 @@ namespace HRPortal.API.Controllers
                     .FirstOrDefaultAsync(d => d.EmployeeId == id);
 
                 if (documents == null)
-                    return NotFound("Documents not found");
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Documents not found"
+                    });
+                }
 
-                return Ok(documents);
+                return Ok(new
+                {
+                    success = true,
+                    message = "Documents fetched successfully",
+                    data = documents
+                });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
+                    success = false,
                     message = "An error occurred while fetching employee documents",
-                    error = ex.Message
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
@@ -964,26 +1368,39 @@ namespace HRPortal.API.Controllers
         }
 
 
-        // Get Employee Education  
+        // Get Employee Education    // muthu   full code
         [HttpGet("{id}/education")]
-        public async Task<ActionResult<EmployeeEducation>> GetEducation(int id)
+        public async Task<IActionResult> GetEducation(int id)
         {
             try
             {
-                var education = await _context.EmployeeEducations
-                    .FirstOrDefaultAsync(e => e.EmpId == id);
+                var educations = await _context.EmployeeEducations
+                    .Where(e => e.EmpId == id)
+                    .ToListAsync();
 
-                if (education == null)
-                    return NotFound();
+                if (educations == null || !educations.Any())
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "No education records found"
+                    });
+                }
 
-                return Ok(education);
+                return Ok(new
+                {
+                    success = true,
+                    message = "Education details fetched successfully",
+                    data = educations
+                });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
+                    success = false,
                     message = "An error occurred while fetching education details",
-                    error = ex.Message
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
@@ -1369,88 +1786,135 @@ namespace HRPortal.API.Controllers
         }
 
 
-        // ADD PAYROLL ENTRY + UPDATE SUMMARY
+        // ADD PAYROLL ENTRY + UPDATE SUMMARY  muthu   full code30
         [HttpPost("add-payroll")]
         public async Task<IActionResult> AddPayroll([FromBody] Payroll payroll)
         {
-            var elementExists = await _context.PayElements
-                .Include(e => e.PayrollHead)
-                .FirstOrDefaultAsync(e => e.ElementId == payroll.ElementId);
-
-            if (elementExists == null)
-                return BadRequest("Invalid ElementId");
-
-            // 🔹 Check existing payroll entry
-            var existingPayroll = await _context.Payrolls
-                .FirstOrDefaultAsync(x =>
-                    x.EmpId == payroll.EmpId &&
-                    x.ElementId == payroll.ElementId &&
-                    x.PayrollMonth == payroll.PayrollMonth &&
-                    x.FinancialYear == payroll.FinancialYear);
-
-            if (existingPayroll != null)
+            try
             {
-                // UPDATE amount if already exists
-                existingPayroll.Amount = payroll.Amount;
-                existingPayroll.CreatedDate = DateTime.UtcNow;
+                // 🔹 Check pay element exists
+                var elementExists = await _context.PayElements
+                    .Include(e => e.PayrollHead)
+                    .FirstOrDefaultAsync(e => e.ElementId == payroll.ElementId);
 
-                _context.Payrolls.Update(existingPayroll);
+                if (elementExists == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Invalid ElementId"
+                    });
+                }
+
+                // 🔹 Check existing payroll
+                var existingPayroll = await _context.Payrolls
+                    .FirstOrDefaultAsync(x =>
+                        x.EmpId == payroll.EmpId &&
+                        x.ElementId == payroll.ElementId &&
+                        x.PayrollMonth == payroll.PayrollMonth &&
+                        x.FinancialYear == payroll.FinancialYear);
+
+                if (existingPayroll != null)
+                {
+                    // UPDATE existing payroll
+                    existingPayroll.Amount = payroll.Amount;
+                    existingPayroll.CreatedDate = DateTime.UtcNow;
+
+                    _context.Payrolls.Update(existingPayroll);
+                }
+                else
+                {
+                    // INSERT new payroll
+                    payroll.CreatedDate = DateTime.UtcNow;
+
+                    await _context.Payrolls.AddAsync(payroll);
+                }
+
+                // 🔹 Save payroll
+                await _context.SaveChangesAsync();
+
+                // 🔹 Get all payroll rows for employee/month/year
+                var payrollData = await _context.Payrolls
+                    .Include(p => p.PayElement)
+                    .ThenInclude(e => e.PayrollHead)
+                    .Where(p =>
+                        p.EmpId == payroll.EmpId &&
+                        p.PayrollMonth == payroll.PayrollMonth &&
+                        p.FinancialYear == payroll.FinancialYear)
+                    .ToListAsync();
+
+                // 🔹 Calculate totals
+                decimal gross = payrollData
+                    .Where(x => x.PayElement.PayrollHead.HeadType == 1)
+                    .Sum(x => x.Amount);
+
+                decimal deductions = payrollData
+                    .Where(x => x.PayElement.PayrollHead.HeadType == 2)
+                    .Sum(x => x.Amount);
+
+                decimal net = gross - deductions;
+
+                decimal annualCtc = gross * 12;
+
+                // 🔹 Check existing summary
+                var summary = await _context.EmployeePayrollSummaries
+                    .FirstOrDefaultAsync(x =>
+                        x.EmpId == payroll.EmpId &&
+                        x.PayrollMonth == payroll.PayrollMonth &&
+                        x.FinancialYear == payroll.FinancialYear);
+
+                if (summary != null)
+                {
+                    // UPDATE summary
+                    summary.MonthlyGross = gross;
+                    summary.TotalDeductions = deductions;
+                    summary.NetTakeHome = net;
+                    summary.AnnualCtc = annualCtc;
+                    summary.CreatedAt = DateTime.UtcNow;
+
+                    _context.EmployeePayrollSummaries.Update(summary);
+                }
+                else
+                {
+                    // INSERT summary
+                    var newSummary = new EmployeePayrollSummary
+                    {
+                        EmpId = payroll.EmpId,
+                        PayrollMonth = payroll.PayrollMonth,
+                        FinancialYear = payroll.FinancialYear,
+                        MonthlyGross = gross,
+                        TotalDeductions = deductions,
+                        NetTakeHome = net,
+                        AnnualCtc = annualCtc,
+                        CreatedAt = DateTime.UtcNow
+                    };
+
+                    await _context.EmployeePayrollSummaries.AddAsync(newSummary);
+                }
+
+                // 🔹 Save summary
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Payroll Saved Successfully",
+                    gross,
+                    deductions,
+                    net,
+                    annualCtc
+                });
             }
-            else
+            catch (Exception ex)
             {
-                // INSERT new payroll
-                payroll.CreatedDate = DateTime.UtcNow;
-                _context.Payrolls.Add(payroll);
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Something went wrong",
+                    error = ex.Message,
+                    innerError = ex.InnerException?.Message
+                });
             }
-
-            // persist payroll row(s)
-            await _context.SaveChangesAsync();
-
-            // 🔹 Calculate totals
-            var payrollData = await _context.Payrolls
-                .Include(p => p.PayElement)
-                .ThenInclude(e => e.PayrollHead)
-                .Where(p => p.EmpId == payroll.EmpId &&
-                            p.PayrollMonth == payroll.PayrollMonth &&
-                            p.FinancialYear == payroll.FinancialYear)
-                .ToListAsync();
-
-            decimal gross = payrollData
-                .Where(x => x.PayElement.PayrollHead.HeadType == 1)
-                .Sum(x => x.Amount);
-
-            decimal deductions = payrollData
-                .Where(x => x.PayElement.PayrollHead.HeadType == 2)
-                .Sum(x => x.Amount);
-
-            decimal net = gross - deductions;
-            decimal annualCtc = gross * 12;
-
-            // 🔹 Upsert summary (atomic ON CONFLICT) to avoid race conditions / unique-constraint violations
-            var now = DateTime.UtcNow;
-
-            await _context.Database.ExecuteSqlInterpolatedAsync($@"
-                INSERT INTO employee_payroll_summary (empid, payrollmonth, ""FinancialYear"", ""MonthlyGross"", ""TotalDeductions"", ""NetTakeHome"", ""AnnualCtc"", ""CreatedAt"")
-                VALUES ({payroll.EmpId}, {payroll.PayrollMonth}, {payroll.FinancialYear}, {gross}, {deductions}, {net}, {annualCtc}, {now})
-                ON CONFLICT (empid, payrollmonth, ""FinancialYear"")
-                DO UPDATE SET
-                    ""MonthlyGross"" = EXCLUDED.""MonthlyGross"",
-                    ""TotalDeductions"" = EXCLUDED.""TotalDeductions"",
-                    ""NetTakeHome"" = EXCLUDED.""NetTakeHome"",
-                    ""AnnualCtc"" = EXCLUDED.""AnnualCtc"",
-                    ""CreatedAt"" = EXCLUDED.""CreatedAt"";
-            ");
-
-            // No additional SaveChanges required for the summary because the upsert was executed directly.
-
-            return Ok(new
-            {
-                message = "Payroll Saved Successfully",
-                gross,
-                deductions,
-                net,
-                annualCtc
-            });
         }
 
 
@@ -1869,4 +2333,3 @@ namespace HRPortal.API.Controllers
 
     }
 }
-    
