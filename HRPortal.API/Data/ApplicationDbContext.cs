@@ -72,7 +72,8 @@ namespace HRPortal.API.Data
 
         public DbSet<EmployeeMaster> EmployeeMaster { get; set; }
 
-
+        public DbSet<Designation> Designations { get; set; }  // muthu
+        public DbSet<EmployeeEmploymentInformation> EmployeeEmploymentInformations { get; set; }  // muthu
 
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
