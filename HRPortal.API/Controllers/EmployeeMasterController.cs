@@ -1,5 +1,6 @@
 ﻿using CsvHelper;
 using CsvHelper.Configuration;
+using DocumentFormat.OpenXml.Bibliography;
 using global::HRPortal.API.Data;
 using HRPortal.API.Data;
 using HRPortal.API.DTOs;
@@ -170,11 +171,39 @@ namespace HRPortal.API.Controllers
                 EmployeeMaster? employee = null;
 
                 var employees = await _context.EmployeeMasters
-                    .FromSqlRaw("EXEC sp_Login @UserName, @Password, @CheckType",
+                    .FromSqlRaw(
+                        "EXEC sp_Login @UserName, @Password, @CheckType",
                         new SqlParameter("@UserName", userName),
                         new SqlParameter("@Password", password),
-                        new SqlParameter("@CheckType", checkType))
+                        new SqlParameter("@CheckType", checkType)
+                    )
                     .ToListAsync();
+
+                // 🔥 ID வைத்து Name Mapping
+                foreach (var emp in employees)
+                {
+                    // Department Name
+                    emp.DepartmentName = await _context.Department_Master
+                        .Where(d => d.DepartmentId == emp.DepartmentId)
+                        .Select(d => d.DepartmentName)
+                        .FirstOrDefaultAsync();
+
+                    // Designation Name
+                    emp.DesignationName = await _context.Designations
+                        .Where(d => d.Id == emp.DesignationId)
+                        .Select(d => d.Name)
+                        .FirstOrDefaultAsync();
+
+                    // Reporting Manager
+                    var manager = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(m => m.EmpId == emp.ReportingManagerId);
+
+                    if (manager != null)
+                    {
+                        emp.ReportingManager_name = manager.FullName;
+                        emp.ReportingManager_code = manager.EmployeeCode;
+                    }
+                }
 
                 employee = employees.FirstOrDefault();
 
@@ -185,6 +214,7 @@ namespace HRPortal.API.Controllers
 
                 string role = "Employee";
 
+                // HR Login
                 if (checkType == 0)
                 {
                     hrAdmin = await _context.HrAdmins
@@ -193,17 +223,36 @@ namespace HRPortal.API.Controllers
                     role = "HR";
                 }
 
-                // use your existing JWT method
+                // JWT Token
                 var token = GenerateJwtToken(employee.EmailId, role);
 
                 return Ok(new
                 {
                     message = "Login successful",
                     token = token,
-                    Employee = employee,
-                    HrAdmin = hrAdmin,
-                    departmentName = employee.DepartmentName
 
+                    Employee = new
+                    {
+                        employee.EmpId,
+                        employee.EmployeeCode,
+                        employee.FullName,
+                        employee.EmailId,
+                        employee.Phone,
+                        employee.DepartmentId,
+                        employee.DepartmentName,
+                        employee.DesignationId,
+                        employee.DesignationName,
+                        employee.ReportingManagerId,
+                        employee.ReportingManager_name,
+                        employee.ReportingManager_code,
+                        employee.DateOfJoining,
+                        employee.CategoryId,
+                        employee.ConfirmationDate,
+                        employee.GradeId
+                        //employee.
+                    },
+
+                    HrAdmin = hrAdmin
                 });
             }
             catch (Exception ex)
@@ -215,6 +264,7 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
+
 
 
         //[AllowAnonymous]
@@ -431,6 +481,60 @@ namespace HRPortal.API.Controllers
             }
         }
 
+
+        // DESIGNATION MASTER ---RAJESH
+        [HttpPost("designation")]
+        public async Task<IActionResult> DesignationMasterApi(
+    int? id,
+    string? name,
+    string actionType)
+        {
+            try
+            {
+                // GET
+                if (actionType.ToUpper() == "GET")
+                {
+                    var data = await _context.Designations
+                        .FromSqlRaw(
+                            "EXEC sp_DesignationMaster @Id={0}, @Name={1}, @ActionType={2}",
+                            id,
+                            name,
+                            actionType)
+                        .ToListAsync();
+
+                    return Ok(new
+                    {
+                        success = true,
+                        message = "Designation fetched successfully",
+                        data = data
+                    });
+                }
+
+                // INSERT & DELETE
+                await _context.Database.ExecuteSqlRawAsync(
+                    "EXEC sp_DesignationMaster @Id={0}, @Name={1}, @ActionType={2}",
+                    id,
+                    name,
+                    actionType);
+
+                return Ok(new
+                {
+                    success = true,
+                    message = actionType + " completed successfully"
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Something went wrong",
+                    error = ex.Message
+                });
+            }
+        }
+
+
         // HR- profile display pannum
         [HttpGet("profile/{id}")]
         public async Task<IActionResult> GetHr(int id)
@@ -511,7 +615,6 @@ namespace HRPortal.API.Controllers
             }
         }
 
-        // Employment Information added    Muthu
         [HttpPost("{id}/employment-information")]
         public async Task<IActionResult> SaveEmploymentInformation(
     int id,
@@ -519,10 +622,10 @@ namespace HRPortal.API.Controllers
         {
             try
             {
-                var employee = await _context.EmployeeMasters
-                    .FirstOrDefaultAsync(e => e.EmpId == id);
+                var employeeExists = await _context.EmployeeMasters
+                    .AnyAsync(e => e.EmpId == id);
 
-                if (employee == null)
+                if (!employeeExists)
                 {
                     return NotFound(new
                     {
@@ -531,37 +634,36 @@ namespace HRPortal.API.Controllers
                     });
                 }
 
+                var sql = @"
+            UPDATE employee_master
+            SET
+                category_id = {0},
+                department_id = {1},
+                Designationid = {2},
+                ReportingManager_Id = {3},
+                date_of_joining = {4},
+                ProbationPeriod = {5},
+                ConfirmationDate = {6},
+                GradeID = {7}
+            WHERE emp_id = {8}";
 
-                var employmentInfo = await _context.EmployeeEmploymentInformations
-                    .FirstOrDefaultAsync(e => e.EmpId == id);
-
-
-                if (employmentInfo == null)
-                {
-                    employmentInfo = new EmployeeEmploymentInformation
-                    {
-                        EmpId = id
-                    };
-
-                    await _context.EmployeeEmploymentInformations
-                        .AddAsync(employmentInfo);
-                }
-
-
-                employmentInfo.EmployeeType = dto.EmployeeType;
-                employmentInfo.DesignationId = dto.DesignationId;
-                employmentInfo.ReportingManager = dto.ReportingManager;
-                employmentInfo.DateOfJoining = dto.DateOfJoining;
-                employmentInfo.ProbationPeriod = dto.ProbationPeriod;
-                employmentInfo.ConfirmationDate = dto.ConfirmationDate;
-                employmentInfo.EmployeeGradeLevel = dto.EmployeeGradeLevel;
-
-                await _context.SaveChangesAsync();
+                await _context.Database.ExecuteSqlRawAsync(
+                    sql,
+                    dto.CategoryId,
+                    dto.DepartmentId,
+                    dto.DesignationId,
+                    dto.ReportingManagerId,
+                    dto.DateOfJoining,
+                    dto.ProbationPeriod,
+                    dto.ConfirmationDate,
+                    dto.GradeID,
+                    id
+                );
 
                 return Ok(new
                 {
                     success = true,
-                    message = "Employment information saved successfully"
+                    message = "Employment information updated successfully"
                 });
             }
             catch (Exception ex)
@@ -569,36 +671,87 @@ namespace HRPortal.API.Controllers
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Something went wrong",
                     error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
-        //  Employment Information GET Muthu
+
+
+        //    [HttpPost("{id}/employment-information")]
+        //    public async Task<IActionResult> SaveEmploymentInformation(
+        //int id,
+        //[FromBody] EmployeeEmploymentInformationDto dto)
+        //    {
+        //        try
+        //        {
+        //            var employee = await _context.EmployeeMasters
+        //                .FirstOrDefaultAsync(e => e.EmpId == id);
+
+        //            if (employee == null)
+        //            {
+        //                return NotFound(new { message = "Employee not found" });
+        //            }
+
+        //            var data = await _context.EmployeeEmploymentInformations
+        //                .FirstOrDefaultAsync(x => x.EmpId == id);
+
+        //            if (data == null)
+        //            {
+        //                data = new EmployeeEmploymentInformation
+        //                {
+        //                    EmpId = id
+        //                };
+
+        //                _context.EmployeeEmploymentInformations.Add(data);
+        //            }
+
+        //            // ✅ ONLY IDS SAVE
+        //            data.EmployeeType = dto.EmployeeType;
+        //            data.Departmentid = dto.Departmentid;
+        //            data.DesignationId = dto.DesignationId;
+        //            data.ReportingManager = dto.ReportingManager;
+        //            data.DateOfJoining = dto.DateOfJoining;
+        //            data.ProbationPeriod = dto.ProbationPeriod;
+        //            data.ConfirmationDate = dto.ConfirmationDate;
+        //            data.EmployeeGradeLevel = dto.EmployeeGradeLevel;
+
+        //            await _context.SaveChangesAsync();
+
+        //            return Ok(new
+        //            {
+        //                success = true,
+        //                message = "Saved successfully"
+        //            });
+        //        }
+        //        catch (Exception ex)
+        //        {
+        //            return StatusCode(500, new
+        //            {
+        //                success = false,
+        //                error = ex.Message
+        //            });
+        //        }
+        //    }
+
+        //Employment Information GET Muthu
         [HttpGet("{id}/employment-information")]
         public async Task<IActionResult> GetEmploymentInformation(int id)
         {
             try
             {
-                var employmentInfo = await _context.EmployeeEmploymentInformations
+                var employmentInfo = await _context.EmployeeMasters
                     .Where(e => e.EmpId == id)
                     .Select(e => new
                     {
-                        e.Id,
                         e.EmpId,
-                        e.EmployeeType,
-
-                        designation = _context.Designations
-                            .Where(d => d.Id == e.DesignationId)
-                            .Select(d => d.Name)
-                            .FirstOrDefault(),
-
+                        e.CategoryId,
+                        e.DepartmentId,
                         e.DesignationId,
-                        e.ReportingManager,
+                        e.ReportingManagerId,
                         e.DateOfJoining,
                         e.ProbationPeriod,
                         e.ConfirmationDate,
-                        e.EmployeeGradeLevel
+                        e.GradeId
                     })
                     .FirstOrDefaultAsync();
 
@@ -607,7 +760,7 @@ namespace HRPortal.API.Controllers
                     return NotFound(new
                     {
                         success = false,
-                        message = "Employment information not found"
+                        message = "Employee not found"
                     });
                 }
 
@@ -623,11 +776,64 @@ namespace HRPortal.API.Controllers
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Something went wrong",
                     error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
+
+        // RAJESH
+        //[HttpGet("{id}/employment-information")]
+        //public async Task<IActionResult> GetEmploymentInformation(int id)
+        //{
+        //    try
+        //    {
+        //        var result = await (from e in _context.EmployeeEmploymentInformations
+        //                            join d in _context.Designations
+        //                            on e.DesignationId equals d.Id into desGroup
+        //                            from d in desGroup.DefaultIfEmpty()
+
+        //                            where e.EmpId == id
+        //                            select new
+        //                            {
+        //                                e.Id,
+        //                                e.EmpId,
+        //                                e.EmployeeType,
+
+        //                                DesignationId = e.DesignationId,
+        //                                DesignationName = d != null ? d.Name : null,
+
+        //                                e.ReportingManager,
+        //                                e.DateOfJoining,
+        //                                e.ProbationPeriod,
+        //                                e.ConfirmationDate,
+        //                                e.EmployeeGradeLevel
+        //                            }).FirstOrDefaultAsync();
+
+        //        if (result == null)
+        //        {
+        //            return NotFound(new
+        //            {
+        //                success = false,
+        //                message = "Employment information not found"
+        //            });
+        //        }
+
+        //        return Ok(new
+        //        {
+        //            success = true,
+        //            message = "Employment information fetched successfully",
+        //            data = result
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            success = false,
+        //            message = ex.Message
+        //        });
+        //    }
+        //}
 
         // dROPDOWN API FOR REGISTER 
 

@@ -16,6 +16,10 @@ namespace HRPortal.API.Models
         [Column("employee_type")]
         public string? EmployeeType { get; set; }
 
+        [Column("Departmentid")]
+        public int? Departmentid { get; set; } //// raje
+
+
         [Column("designation_id")]
         public int? DesignationId { get; set; }
 

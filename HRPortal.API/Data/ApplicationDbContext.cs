@@ -14,7 +14,9 @@ namespace HRPortal.API.Data
         }
 
         public DbSet<EmployeeMaster> EmployeeMasters { get; set; }
+       // public DbSet<EmployeeMaster> EmployeeMasters { get; set; }
         public DbSet<EmployeeAddress> EmployeeAddresses { get; set; }
+
         public DbSet<EmployeePersonalDetails> EmployeePersonalDetails { get; set; }
         public DbSet<EmployeeEducation> EmployeeEducations { get; set; }
         public DbSet<EmployeeCompensation> EmployeeCompensations { get; set; }
@@ -73,6 +75,8 @@ namespace HRPortal.API.Data
         public DbSet<EmployeeMaster> EmployeeMaster { get; set; }
 
         public DbSet<Designation> Designations { get; set; }  // muthu
+
+     
         public DbSet<EmployeeEmploymentInformation> EmployeeEmploymentInformations { get; set; }  // muthu
 
 
