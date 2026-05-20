@@ -1,3 +1,5 @@
 <Solution>
-  <Project Path="HRPortal.API/HRPortal.API.csproj" />
+  <Project Path="HRPortal.API/HRPortal.API.csproj">
+    <BuildType Project="Debug" />
+  </Project>
 </Solution>

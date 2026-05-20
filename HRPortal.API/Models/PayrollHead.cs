@@ -16,5 +16,6 @@ namespace HRPortal.API.Models
         // 1 = Earnings , 2 = Deduction , 3 = Employer Contribution
         [Column("head_type")]
         public int HeadType { get; set; }
+
     }
 }

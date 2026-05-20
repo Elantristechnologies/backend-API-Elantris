@@ -35,6 +35,17 @@ public class EmployeeCompensation
 
     [Column("benefits")]
     public string? Benefits { get; set; }
+    [Column("PANNo")]
+    public string? PANNo { get; set; }
+
+    [Column("PFNo")]
+    public string? PFNo { get; set; }
+
+    [Column("UANNo")]
+    public string? UANNo { get; set; }
+
+    [Column("ESINo")]
+    public string? ESINo { get; set; }
 
     [ForeignKey("EmpId")]
     public EmployeeMaster? Employee { get; set; }

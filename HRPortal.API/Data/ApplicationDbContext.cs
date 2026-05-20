@@ -27,10 +27,16 @@ namespace HRPortal.API.Data
         public DbSet<Shift> Shifts { get; set; }
         public DbSet<WeekOff> WeekOffs { get; set; }
         public DbSet<PayrollHead> PayrollHeads { get; set; }
+      
+
+     
         public DbSet<PayElement> PayElements { get; set; }
         public DbSet<Payroll> Payrolls { get; set; }
-        public DbSet<EmployeePayrollSummary> EmployeePayrollSummaries { get; set; }
+        public DbSet<EmployeePayrollSummary> EmployeePayrollSummary { get; set; }
         public DbSet<CompanyPayrollOverview> CompanyPayrollOverviews { get; set; }
+
+        //---rajesh 
+        public DbSet<PayslipDTO> PayslipDTO { get; set; }
 
         // ---------- for dropdown register emp--------
         public DbSet<DepartmentMaster> Department_Master { get; set; }
@@ -65,7 +71,6 @@ namespace HRPortal.API.Data
 
         //---------CashVoucher----------
 
-        public DbSet<CashVoucher> CashVouchers { get; set; }
 
         //----access control-----
         public DbSet<CompanyexpenseAccesses> CompanyexpenseAccesses { get; set; }
@@ -78,12 +83,13 @@ namespace HRPortal.API.Data
 
      
         public DbSet<EmployeeEmploymentInformation> EmployeeEmploymentInformations { get; set; }  // muthu
-
+        public DbSet<LoginResponseDto> LoginResponseDtos { get; set; } //rajesh
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<EmployeeAccessResultsdto>().HasNoKey();
-
+            modelBuilder.Entity<PayslipDTO>().HasNoKey();
+            modelBuilder.Entity<LoginResponseDto>().HasNoKey();
             modelBuilder.Entity<EmployeeAddress>()
                 .HasOne(a => a.Employee)
                 .WithOne(e => e.Address)

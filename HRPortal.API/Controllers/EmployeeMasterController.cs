@@ -78,194 +78,7 @@ namespace HRPortal.API.Controllers
 
 
 
-
-        //[HttpPost("loginss")]
-        //public async Task<IActionResult> Login(string userName, string password, int checkType)
-        //{
-        //    HrAdmin? hrAdmin = null;
-        //    EmployeeMaster? employee = null;
-
-        //    if (checkType == 0)
-        //    {
-        //        // HR login
-        //        hrAdmin = await _context.HrAdmins
-        //            .FirstOrDefaultAsync(x => x.Email == userName
-        //                                  && x.PasswordHash == password);
-
-        //        if (hrAdmin == null)
-        //            return Unauthorized("Invalid HR login");
-
-        //        employee = await _context.EmployeeMasters
-        //            .FirstOrDefaultAsync(x => x.EmployeeCode == hrAdmin.empcode);
-        //    }
-        //    else
-        //    {
-        //        // Employee login
-        //        employee = await _context.EmployeeMasters
-        //            .FirstOrDefaultAsync(x => x.EmailId == userName
-        //                                  && x.Password == password);
-
-        //        if (employee == null)
-        //            return Unauthorized("Invalid Employee login");
-        //    }
-
-        //    return Ok(new
-        //    {
-        //        HrAdmin = hrAdmin,
-        //        Employee = employee
-        //    });
-        //}
-        /// <summary>
-        /// //hiiiiiiiiii allll
-        /// 
-        /// </summary>
-        /// <param name="userName"></param>
-        /// <param name="password"></param>
-        /// <param name="checkType"></param>
-        //<returns></returns>
-        //[HttpPost("login")]
-        //public async Task<IActionResult> Login(string userName, string password, int checkType)
-        //{
-        //    HrAdmin? hrAdmin = null;
-        //    EmployeeMaster? employee = null;
-
-        //    // Get employee from SP
-        //    var employees = await _context.EmployeeMasters
-        //        .FromSqlRaw("EXEC sp_Login @UserName, @Password, @CheckType",
-        //            new SqlParameter("@UserName", userName),
-        //            new SqlParameter("@Password", password),
-        //            new SqlParameter("@CheckType", checkType))
-        //        .ToListAsync();
-
-        //    employee = employees.FirstOrDefault();
-
-        //    if (employee == null)
-        //        return Unauthorized("Invalid login");
-
-        //    // If HR login then fetch hr_admin
-        //    if (checkType == 0)
-        //    {
-        //        hrAdmin = await _context.HrAdmins
-        //            .FirstOrDefaultAsync(x => x.empcode == employee.EmployeeCode);
-        //    }
-
-        //    return Ok(new
-        //    {
-        //        HrAdmin = hrAdmin,
-        //        Employee = employee
-        //    });
-        //}
-
-
-
-
         ///logimn apiu with jwt token
-
-        [AllowAnonymous]
-        [HttpPost("login")]
-        public async Task<IActionResult> Login(string userName, string password, int checkType)
-        {
-            try
-            {
-                HrAdmin? hrAdmin = null;
-                EmployeeMaster? employee = null;
-
-                var employees = await _context.EmployeeMasters
-                    .FromSqlRaw(
-                        "EXEC sp_Login @UserName, @Password, @CheckType",
-                        new SqlParameter("@UserName", userName),
-                        new SqlParameter("@Password", password),
-                        new SqlParameter("@CheckType", checkType)
-                    )
-                    .ToListAsync();
-
-                // 🔥 ID வைத்து Name Mapping
-                foreach (var emp in employees)
-                {
-                    // Department Name
-                    emp.DepartmentName = await _context.Department_Master
-                        .Where(d => d.DepartmentId == emp.DepartmentId)
-                        .Select(d => d.DepartmentName)
-                        .FirstOrDefaultAsync();
-
-                    // Designation Name
-                    emp.DesignationName = await _context.Designations
-                        .Where(d => d.Id == emp.DesignationId)
-                        .Select(d => d.Name)
-                        .FirstOrDefaultAsync();
-
-                    // Reporting Manager
-                    var manager = await _context.EmployeeMasters
-                        .FirstOrDefaultAsync(m => m.EmpId == emp.ReportingManagerId);
-
-                    if (manager != null)
-                    {
-                        emp.ReportingManager_name = manager.FullName;
-                        emp.ReportingManager_code = manager.EmployeeCode;
-                    }
-                }
-
-                employee = employees.FirstOrDefault();
-
-                if (employee == null)
-                {
-                    return Unauthorized("Invalid login");
-                }
-
-                string role = "Employee";
-
-                // HR Login
-                if (checkType == 0)
-                {
-                    hrAdmin = await _context.HrAdmins
-                        .FirstOrDefaultAsync(x => x.empcode == employee.EmployeeCode);
-
-                    role = "HR";
-                }
-
-                // JWT Token
-                var token = GenerateJwtToken(employee.EmailId, role);
-
-                return Ok(new
-                {
-                    message = "Login successful",
-                    token = token,
-
-                    Employee = new
-                    {
-                        employee.EmpId,
-                        employee.EmployeeCode,
-                        employee.FullName,
-                        employee.EmailId,
-                        employee.Phone,
-                        employee.DepartmentId,
-                        employee.DepartmentName,
-                        employee.DesignationId,
-                        employee.DesignationName,
-                        employee.ReportingManagerId,
-                        employee.ReportingManager_name,
-                        employee.ReportingManager_code,
-                        employee.DateOfJoining,
-                        employee.CategoryId,
-                        employee.ConfirmationDate,
-                        employee.GradeId
-                        //employee.
-                    },
-
-                    HrAdmin = hrAdmin
-                });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    message = "Error occurred",
-                    error = ex.Message
-                });
-            }
-        }
-
-
 
         //[AllowAnonymous]
         //[HttpPost("login")]
@@ -277,11 +90,39 @@ namespace HRPortal.API.Controllers
         //        EmployeeMaster? employee = null;
 
         //        var employees = await _context.EmployeeMasters
-        //            .FromSqlRaw("EXEC sp_Login @UserName, @Password, @CheckType",
+        //            .FromSqlRaw(
+        //                "EXEC sp_Login @UserName, @Password, @CheckType",
         //                new SqlParameter("@UserName", userName),
         //                new SqlParameter("@Password", password),
-        //                new SqlParameter("@CheckType", checkType))
+        //                new SqlParameter("@CheckType", checkType)
+        //            )
         //            .ToListAsync();
+
+        //        // 🔥 ID வைத்து Name Mapping
+        //        foreach (var emp in employees)
+        //        {
+        //            // Department Name
+        //            emp.DepartmentName = await _context.Department_Master
+        //                .Where(d => d.DepartmentId == emp.DepartmentId)
+        //                .Select(d => d.DepartmentName)
+        //                .FirstOrDefaultAsync();
+
+        //            // Designation Name
+        //            emp.DesignationName = await _context.Designations
+        //                .Where(d => d.Id == emp.DesignationId)
+        //                .Select(d => d.Name)
+        //                .FirstOrDefaultAsync();
+
+        //            // Reporting Manager
+        //            var manager = await _context.EmployeeMasters
+        //                .FirstOrDefaultAsync(m => m.EmpId == emp.ReportingManagerId);
+
+        //            if (manager != null)
+        //            {
+        //                emp.ReportingManager_name = manager.FullName;
+        //                emp.ReportingManager_code = manager.EmployeeCode;
+        //            }
+        //        }
 
         //        employee = employees.FirstOrDefault();
 
@@ -292,6 +133,7 @@ namespace HRPortal.API.Controllers
 
         //        string role = "Employee";
 
+        //        // HR Login
         //        if (checkType == 0)
         //        {
         //            hrAdmin = await _context.HrAdmins
@@ -300,28 +142,36 @@ namespace HRPortal.API.Controllers
         //            role = "HR";
         //        }
 
-        //        // ✅ Department fetch
-        //        //var department = await _context.Department
-        //        //    .FirstOrDefaultAsync(d => d.DepartmentId == employee.DepartmentId);
-
-        //        // ✅ JWT token
+        //        // JWT Token
         //        var token = GenerateJwtToken(employee.EmailId, role);
 
         //        return Ok(new
         //        {
         //            message = "Login successful",
         //            token = token,
-        //            employee = new
+
+        //            Employee = new
         //            {
         //                employee.EmpId,
+        //                employee.EmployeeCode,
         //                employee.FullName,
         //                employee.EmailId,
-        //                employee.EmployeeCode,
-        //                //departmentId = department?.DepartmentId,
-        //                //departmentName = department?.DepartmentName
+        //                employee.Phone,
+        //                employee.DepartmentId,
+        //                employee.DepartmentName,
+        //                employee.DesignationId,
+        //                employee.DesignationName,
+        //                employee.ReportingManagerId,
+        //                employee.ReportingManager_name,
+        //                employee.ReportingManager_code,
+        //                employee.DateOfJoining,
+        //                employee.CategoryId,
+        //                employee.ConfirmationDate,
+        //                employee.GradeId
+        //                //employee.
         //            },
-        //            role = role,
-        //            hrAdmin = hrAdmin
+
+        //            HrAdmin = hrAdmin
         //        });
         //    }
         //    catch (Exception ex)
@@ -333,6 +183,118 @@ namespace HRPortal.API.Controllers
         //        });
         //    }
         //}
+
+        [AllowAnonymous]
+        [HttpPost("login")]
+        public async Task<IActionResult> Login(
+     string userName,
+     string password,
+     int checkType)
+        {
+            try
+            {
+                HrAdmin? hrAdmin = null;
+
+                // 🔹 Execute SP
+                var employees = await _context.LoginResponseDtos
+                    .FromSqlRaw(
+                        "EXEC sp_Login @UserName, @Password",
+                        new SqlParameter("@UserName", userName),
+                        new SqlParameter("@Password", password)
+                    )
+                    .ToListAsync();
+
+                var employee = employees.FirstOrDefault();
+
+                // 🔹 Invalid Login
+                if (employee == null)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid Username or Password"
+                    });
+                }
+
+                // 🔹 Role
+                string role = employee.Role ?? "Employee";
+
+                // 🔹 HR Details
+                if (role == "HR")
+                {
+                    hrAdmin = await _context.HrAdmins
+                        .FirstOrDefaultAsync(x =>
+                            x.empcode == employee.EmployeeCode);
+                }
+
+                // 🔹 JWT Token
+                var token = GenerateJwtToken(
+                    employee.EmailId,
+                    role
+                );
+
+                // 🔹 Final Response
+                return Ok(new
+                {
+                    success = true,
+
+                    message = "Login successful",
+
+                    role = role,
+
+                    token = token,
+
+                    employee = new
+                    {
+                        employee.EmpId,
+
+                        employee.EmployeeCode,
+
+                        employee.FullName,
+
+                        employee.EmailId,
+
+                        employee.Phone,
+
+                        employee.DepartmentId,
+
+                        employee.DepartmentName,
+
+                        employee.DesignationId,
+
+                        employee.DesignationName,
+
+                        employee.ReportingManagerId,
+
+                        employee.ReportingManager_code,
+
+                        employee.ReportingManager_name,
+
+                        employee.DateOfJoining,
+
+                        employee.CategoryId,
+
+                        employee.ConfirmationDate,
+
+                        employee.GradeId
+                    },
+
+                    hrAdmin = hrAdmin
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+
+                    message = "Error occurred",
+
+                    error = ex.Message
+                });
+            }
+        }
+
 
         private string GenerateJwtToken(string email, string role)
         {
@@ -1043,9 +1005,11 @@ namespace HRPortal.API.Controllers
                 personal.FirstName = dto.FirstName;
                 personal.LastName = dto.LastName;
                 personal.FullName = dto.FullName;
+                personal.FatherName = dto.FatherName;
                 personal.Religion = dto.Religion;
                 personal.Mobile = dto.Mobile;
                 personal.AlternateContact = dto.AlternateContact;
+
 
                 if (dto.DateOfBirth.HasValue)
                 {
@@ -1243,6 +1207,10 @@ namespace HRPortal.API.Controllers
                 compensation.AccountType = dto.AccountType;
                 compensation.TaxInfo = dto.TaxInfo;
                 compensation.Benefits = dto.Benefits;
+                compensation.PANNo = dto.PANNo;
+                compensation.PFNo = dto.PFNo;
+                compensation.UANNo = dto.UANNo;
+                compensation.ESINo = dto.ESINo;
 
                 await _context.SaveChangesAsync();
 
@@ -2063,7 +2031,7 @@ namespace HRPortal.API.Controllers
                 decimal annualCtc = gross * 12;
 
                 // 🔹 Check existing summary
-                var summary = await _context.EmployeePayrollSummaries
+                var summary = await _context.EmployeePayrollSummary
                     .FirstOrDefaultAsync(x =>
                         x.EmpId == payroll.EmpId &&
                         x.PayrollMonth == payroll.PayrollMonth &&
@@ -2078,7 +2046,7 @@ namespace HRPortal.API.Controllers
                     summary.AnnualCtc = annualCtc;
                     summary.CreatedAt = DateTime.UtcNow;
 
-                    _context.EmployeePayrollSummaries.Update(summary);
+                    _context.EmployeePayrollSummary.Update(summary);
                 }
                 else
                 {
@@ -2095,7 +2063,7 @@ namespace HRPortal.API.Controllers
                         CreatedAt = DateTime.UtcNow
                     };
 
-                    await _context.EmployeePayrollSummaries.AddAsync(newSummary);
+                    await _context.EmployeePayrollSummary.AddAsync(newSummary);
                 }
 
                 // 🔹 Save summary
@@ -2156,7 +2124,7 @@ namespace HRPortal.API.Controllers
                 if (model == null)
                     return BadRequest("Invalid data");
 
-                var summary = await _context.EmployeePayrollSummaries
+                var summary = await _context.EmployeePayrollSummary
                     .FirstOrDefaultAsync(x =>
                         x.EmpId == model.EmpId &&
                         x.PayrollMonth == model.PayrollMonth &&
@@ -2184,7 +2152,7 @@ namespace HRPortal.API.Controllers
                         CreatedAt = DateTime.UtcNow
                     };
 
-                    await _context.EmployeePayrollSummaries.AddAsync(summary);
+                    await _context.EmployeePayrollSummary.AddAsync(summary);
                 }
 
                 await _context.SaveChangesAsync();
@@ -2204,6 +2172,86 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
+
+
+        // Rajesh payslip
+
+        [HttpGet("payslip/{employeeId}")]
+        public async Task<IActionResult> GetPayslip(int employeeId)
+        {
+            try
+            {
+                var result = await _context.PayslipDTO
+                    .FromSqlInterpolated(
+                        $"EXEC sp_GetEmployeePayslip @EmployeeId = {employeeId}")
+                    .ToListAsync();
+
+                if (result == null || result.Count == 0)
+                {
+                    return NotFound(new
+                    {
+                        Message = "Payslip Not Found"
+                    });
+                }
+
+                var first = result.First();
+
+                var response = new PayslipDTO
+                {
+                    EmployeeName = first.EmployeeName,
+                    EmployeeCode = first.EmployeeCode,
+
+                    Department = first.Department,
+                    Designation = first.Designation,
+
+                    FatherName = first.FatherName,
+                    DateOfBirth = first.DateOfBirth,
+
+                    BankName = first.BankName,
+                    AccountNumber = first.AccountNumber,
+
+                    PFNo = first.PFNo,
+                    UANNo = first.UANNo,
+                    ESINo = first.ESINo,
+
+                    PayrollMonth = first.PayrollMonth,
+                    FinancialYear = first.FinancialYear,
+
+                    MonthlyGross = first.MonthlyGross,
+                    TotalDeductions = first.TotalDeductions,
+                    NetTakeHome = first.NetTakeHome,
+                    AnnualCtc = first.AnnualCtc,
+
+                    Earnings = result
+                        .Where(x => x.head_type == 1)
+                        .Select(x => new SalaryComponentDTO
+                        {
+                            HeadName = x.head_name,
+                            Amount = x.Amount
+                        }).ToList(),
+
+                    Deductions = result
+                        .Where(x => x.head_type == 2)
+                        .Select(x => new SalaryComponentDTO
+                        {
+                            HeadName = x.head_name,
+                            Amount = x.Amount
+                        }).ToList()
+                };
+
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Message = "Internal Server Error",
+                    Error = ex.Message
+                });
+            }
+        }
+
+
 
         [HttpGet("payroll-overview")]
         public async Task<IActionResult> GetPayrollOverview(int empId, int month, string financialYear)
@@ -2238,7 +2286,7 @@ namespace HRPortal.API.Controllers
                     })
                     .ToListAsync();
 
-                var summary = await _context.EmployeePayrollSummaries
+                var summary = await _context.EmployeePayrollSummary
                     .FirstOrDefaultAsync(x =>
                         x.EmpId == empId &&
                         x.PayrollMonth == month &&
@@ -2270,7 +2318,7 @@ namespace HRPortal.API.Controllers
         {
             try
             {
-                var summary = await _context.EmployeePayrollSummaries
+                var summary = await _context.EmployeePayrollSummary
                     .Where(x => x.EmpId == empId &&
                                 x.PayrollMonth == month &&
                                 x.FinancialYear == financialYear)
@@ -2298,7 +2346,7 @@ namespace HRPortal.API.Controllers
         {
             try
             {
-                var summaries = await _context.EmployeePayrollSummaries
+                var summaries = await _context.EmployeePayrollSummary
                     .Where(x => x.PayrollMonth == month && x.FinancialYear == year)
                     .ToListAsync();
 
@@ -2407,7 +2455,7 @@ namespace HRPortal.API.Controllers
         {
             try
             {
-                var summaries = await _context.EmployeePayrollSummaries
+                var summaries = await _context.EmployeePayrollSummary
                     .Where(x => x.PayrollMonth == month &&
                                 x.FinancialYear == financialYear)
                     .ToListAsync();
@@ -2447,7 +2495,7 @@ namespace HRPortal.API.Controllers
         {
             try
             {
-                var data = await _context.EmployeePayrollSummaries
+                var data = await _context.EmployeePayrollSummary
                     .Where(x => x.EmpId == empId)
                     .OrderByDescending(x => x.PayrollMonth)
                     .Select(x => new
@@ -2473,12 +2521,16 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
+
+
+
+
         [HttpPost("save-payroll-summary")]
         public async Task<IActionResult> SavePayrollSummary([FromBody] PayrollSummaryDto dto)
         {
             try
             {
-                var summary = await _context.EmployeePayrollSummaries
+                var summary = await _context.EmployeePayrollSummary
                     .SingleOrDefaultAsync(x =>
                         x.EmpId == dto.EmpId &&
                         x.PayrollMonth == dto.PayrollMonth &&
@@ -2498,7 +2550,7 @@ namespace HRPortal.API.Controllers
                         CreatedAt = DateTime.UtcNow
                     };
 
-                    _context.EmployeePayrollSummaries.Add(summary);
+                    _context.EmployeePayrollSummary.Add(summary);
                 }
                 else
                 {
@@ -2539,3 +2591,5 @@ namespace HRPortal.API.Controllers
 
     }
 }
+
+

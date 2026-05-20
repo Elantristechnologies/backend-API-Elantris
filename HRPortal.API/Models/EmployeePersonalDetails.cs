@@ -24,6 +24,8 @@ namespace HRPortal.API.Models
 
         [Column("full_name")]
         public string FullName { get; set; }
+        [Column("FatherName")]
+        public string FatherName { get; set; }
 
         [Column("religion")]
         public string Religion { get; set; }

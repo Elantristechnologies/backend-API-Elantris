@@ -7,6 +7,7 @@ using Microsoft.OpenApi;
 using System.Text;
 using Microsoft.AspNetCore.Authorization;
 var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.UseWebRoot("wwwroot");
 
 // allow localhost + LAN IP
 builder.WebHost.ConfigureKestrel(options =>
@@ -40,6 +41,7 @@ builder.Services.AddAuthentication(options =>
     };
 });
 builder.Services.AddAuthorization();
+
 
 // CORS
 builder.Services.AddCors(options =>
@@ -100,11 +102,7 @@ app.UseSwaggerUI(c =>
 
 
 
-
-
-
-
-
+app.UseStaticFiles();
 app.UseRouting();
 
 app.UseCors("AllowFrontend");

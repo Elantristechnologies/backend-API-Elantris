@@ -25,8 +25,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Uploads\Bills\" />
-    <Folder Include="wwwroot\" />
+    <None Include="wwwroot\Uploads\Bills\sample_2_20260515153453_0d96.png" />
   </ItemGroup>
 
   <ProjectExtensions><VisualStudio><UserProperties appsettings_1json__JsonSchema="" /></VisualStudio></ProjectExtensions>

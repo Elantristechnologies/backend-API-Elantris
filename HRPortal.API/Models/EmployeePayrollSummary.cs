@@ -1,4 +1,5 @@
-﻿using System.ComponentModel.DataAnnotations;
+﻿using HRPortal.API.Models;
+using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 [Table("employee_payroll_summary")]
@@ -31,4 +32,6 @@ public class EmployeePayrollSummary
 
     [Column("CreatedAt")]
     public DateTime CreatedAt { get; set; }
+
+   
 }

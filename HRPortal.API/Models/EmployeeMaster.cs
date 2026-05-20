@@ -157,5 +157,7 @@ namespace HRPortal.API.Models
         public EmployeeDocuments? EmployeeDocuments { get; set; }
 
         public ICollection<AttendanceMaster>? Attendances { get; set; }
+
+        
     }
 }

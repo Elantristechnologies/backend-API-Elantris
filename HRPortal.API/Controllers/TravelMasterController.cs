@@ -17,10 +17,16 @@ namespace HRPortal.API.Controllers
     public class TravelMasterController : ControllerBase
     {
         private readonly ApplicationDbContext _context;
+        private readonly IWebHostEnvironment _environment;
 
-        public TravelMasterController(ApplicationDbContext context)
+
+
+
+        public TravelMasterController(ApplicationDbContext context, IWebHostEnvironment environment)
         {
             _context = context;
+            _environment = environment;
+
         }
 
         [HttpPost("save")]
@@ -1143,157 +1149,14 @@ namespace HRPortal.API.Controllers
             }
         }
 
-        //   [HttpPost("spent_amount_add")]
-        //   public async Task<IActionResult> AddSpent(
-        //[FromForm] IFormFile file,
-        //[FromForm] SpentAmount model)
-        //   {
-        //       try
-        //       {
-        //           // Excel Upload
-        //           if (file != null && file.Length > 0)
-        //           {
-        //               using var stream = new MemoryStream();
-        //               await file.CopyToAsync(stream);
-
-        //               using var workbook = new XLWorkbook(stream);
-        //               var ws = workbook.Worksheet(1);
-
-        //               int row = 2;
-
-        //               while (!ws.Cell(row, 1).IsEmpty())
-        //               {
-        //                   var item = new SpentAmount();
-
-        //                   item.Date = ws.Cell(row, 1).GetDateTime();
-
-        //                   // Purchase Type Column B
-        //                   string purchaseTypeName = ws.Cell(row, 2).GetString();
-
-        //                   item.PurchaseItem = _context.PurchaseTypes
-        //                       .Where(x => x.Name == purchaseTypeName)
-        //                       .Select(x => x.Id)
-        //                       .FirstOrDefault();
-
-        //                   item.Amount = Convert.ToDecimal(ws.Cell(row, 3).Value.ToString());
-
-        //                   item.BillFile = ws.Cell(row, 4).GetString();
-
-        //                   item.Remarks = ws.Cell(row, 5).GetString();
-
-        //                   item.employee_id = model.employee_id;
-
-        //                   item.IsActive = true;
-
-        //                   _context.SpentAmounts.Add(item);
-
-        //                   row++;
-        //               }
-
-        //               await _context.SaveChangesAsync();
-
-        //               return Ok("Excel Uploaded Successfully");
-        //           }
-
-        //           // Single Form Save
-        //           model.IsActive = true;
-
-        //           _context.SpentAmounts.Add(model);
-        //           await _context.SaveChangesAsync();
-
-        //           return Ok(model);
-        //       }
-        //       catch (Exception ex)
-        //       {
-        //           return BadRequest(ex.Message);
-        //       }
-        //   }
-
-        //[HttpGet("spent-template")]
-        //public async Task<IActionResult> DownloadSpentTemplate()
-        //{
-        //    try
-        //    {
-        //        using var workbook = new XLWorkbook();
-
-        //        // Main Sheet
-        //        var ws = workbook.Worksheets.Add("Expense");
-
-        //        ws.Cell("A1").Value = "Date";
-        //        ws.Cell("B1").Value = "Purchase Type";
-        //        ws.Cell("C1").Value = "Amount";
-        //        ws.Cell("D1").Value = "Bill File";
-        //        ws.Cell("E1").Value = "Remarks";
-
-        //        ws.Row(1).Style.Font.Bold = true;
-
-        //        // Date Format
-        //        ws.Range("A2:A500").Style.NumberFormat.Format = "dd/MM/yyyy";
-
-        //        // Purchase Type Values from DB
-        //        var purchaseTypes = await _context.PurchaseTypes
-        //            .OrderBy(x => x.Name)
-        //            .ToListAsync();
-
-        //        // Hidden Sheet for Dropdown
-        //        var listSheet = workbook.Worksheets.Add("Lists");
-
-        //        for (int i = 0; i < purchaseTypes.Count; i++)
-        //        {
-        //            listSheet.Cell(i + 1, 1).Value = purchaseTypes[i].Name;
-        //        }
-
-        //        listSheet.Hide();
-
-        //        // Dropdown in Column B
-        //        var validation = ws.Range("B2:B500").CreateDataValidation();
-        //        validation.List(listSheet.Range($"A1:A{purchaseTypes.Count}"));
-
-        //        // Auto Width
-        //        ws.Columns().AdjustToContents();
-
-        //        using var stream = new MemoryStream();
-        //        workbook.SaveAs(stream);
-        //        stream.Position = 0;
-
-        //        return File(
-        //            stream.ToArray(),
-        //            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        //            "SpentTemplate.xlsx"
-        //        );
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return BadRequest(ex.Message);
-        //    }
-        //}
-
-        // ================================
-        // 1. SINGLE ADD EXPENSE
-        // POST: api/spent
-        // ================================
-        //[HttpPost("spent")]
-        //public async Task<IActionResult> AddSpent([FromBody] SpentAmount model)
-        //{
-        //    try
-        //    {
-        //        model.IsActive = true;
-
-        //        _context.SpentAmounts.Add(model);
-        //        await _context.SaveChangesAsync();
-
-        //        return Ok(model);
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return BadRequest(ex.Message);
-        //    }
-        //}
         [HttpPost("spent")]
         public async Task<IActionResult> AddSpent([FromForm] SpentCreateDto dto)
         {
             try
             {
+                if (dto == null)
+                    return BadRequest("DTO is null");
+
                 var model = new SpentAmount
                 {
                     Date = dto.Date,
@@ -1304,70 +1167,56 @@ namespace HRPortal.API.Controllers
                     IsActive = true
                 };
 
-                // ✅ File Upload
+                // 🔹 FILE UPLOAD OPTIONAL
                 if (dto.billFile != null && dto.billFile.Length > 0)
                 {
-                    string folderPath = Path.Combine(
-                        Directory.GetCurrentDirectory(),
+                    // Folder Path
+                    var folderPath = Path.Combine(
+                        _environment.WebRootPath,
                         "Uploads",
                         "Bills");
 
-                    // create folder if not exists
+                    // Create Folder
                     if (!Directory.Exists(folderPath))
-                        Directory.CreateDirectory(folderPath);
-
-                    // 🔹 Original file name (clean)
-                    var originalName = Path.GetFileNameWithoutExtension(dto.billFile.FileName);
-                    var extension = Path.GetExtension(dto.billFile.FileName);
-
-                    // remove spaces & invalid chars
-                    originalName = string.Concat(originalName.Split(Path.GetInvalidFileNameChars()))
-                                         .Replace(" ", "_");
-
-                    // 🔹 Employee ID (or EmpCode use pannalaam)
-                    var empId = dto.employee_id;
-
-                    // 🔹 Timestamp
-                    var timeStamp = DateTime.Now.ToString("yyyyMMddHHmmss");
-
-                    // 🔹 Extra safety (same second duplicate avoid)
-                    var shortId = Guid.NewGuid().ToString().Substring(0, 4);
-
-                    // ✅ Final file name format
-                    // Example: xray_EMP101_20260504113055_ab12.jpg
-                    string fileName = $"{originalName}_{empId}_{timeStamp}_{shortId}{extension}";
-
-                    string fullPath = Path.Combine(folderPath, fileName);
-
-                    // save file
-                    using (var stream = new FileStream(fullPath, FileMode.Create))
                     {
-                        await dto.billFile.CopyToAsync(stream);
+                        Directory.CreateDirectory(folderPath);
                     }
 
-                    // save to DB
-                    model.BillFile = fileName;
+                    // Unique File Name
+                    var fileName = Guid.NewGuid().ToString()
+                                   + Path.GetExtension(dto.billFile.FileName);
+
+                    // Full Path
+                    var filePath = Path.Combine(folderPath, fileName);
+
+                    // Save File
+                    using (var stream = new FileStream(filePath, FileMode.Create))
+                    {
+                        await dto.billFile.CopyToAsync(stream);
+                        await stream.FlushAsync();
+                    }
+
+                    // Save Path in DB
+                    model.BillFile = Path.Combine("Uploads", "Bills", fileName)
+                        .Replace("\\", "/");
                 }
 
+                // 🔹 SAVE DATA EVEN WITHOUT FILE
                 _context.SpentAmounts.Add(model);
+
                 await _context.SaveChangesAsync();
 
                 return Ok(new
                 {
                     message = "Spent added successfully",
-                    data = model
+                    fileName = model.BillFile
                 });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new
-                {
-                    message = "Error while saving spent",
-                    error = ex.Message
-                });
+                return StatusCode(500, ex.Message);
             }
         }
-
 
         [HttpGet("spent-template")]
         public async Task<IActionResult> DownloadSpentTemplate()
@@ -1392,7 +1241,6 @@ namespace HRPortal.API.Controllers
                 // HEADER STYLE (YELLOW)
                 // ======================================
                 var headerRange = ws.Range("A1:F1");
-
                 headerRange.Style.Font.Bold = true;
                 headerRange.Style.Font.FontColor = XLColor.Black;
                 headerRange.Style.Fill.BackgroundColor = XLColor.Yellow;
@@ -1615,7 +1463,157 @@ namespace HRPortal.API.Controllers
         }
 
 
+        [HttpGet("voucher")]
+        public async Task<IActionResult> GetVoucher(int employeeId, int month, int year)
+        {
+            try
+            {
+                // 🔹 Employee Check
+                var employee = await _context.EmployeeMasters
+                    .Where(x => x.EmpId == employeeId)
+                    .Select(x => x.FullName)
+                    .FirstOrDefaultAsync();
 
+                if (employee == null)
+                {
+                    return NotFound(new
+                    {
+                        Message = "Employee Not Found"
+                    });
+                }
+
+                // 🔹 Get Selected Month Data
+                var spentData = await _context.SpentAmounts
+                    .Where(x =>
+                        x.employee_id == employeeId &&
+                        x.IsActive == true &&
+                        x.Date.Month == month &&
+                        x.Date.Year == year
+                    )
+                    .ToListAsync();
+
+                // 🔹 No Data
+                if (!spentData.Any())
+                {
+                    return Ok(new
+                    {
+                        success = false,
+                        message = "No Voucher Found For Selected Month",
+                        data = (object)null
+                    });
+                }
+
+                // 🔹 Total Amount
+                var totalAmount = spentData.Sum(x => x.Amount);
+
+                // 🔹 Purchase Types
+                var purchaseTypes = await (
+                    from s in _context.SpentAmounts
+
+                    join p in _context.PurchaseTypes
+                    on s.PurchaseItem equals p.Id
+
+                    where s.employee_id == employeeId
+                          && s.IsActive == true
+                          && s.Date.Month == month
+                          && s.Date.Year == year
+
+                    select p.Name
+
+                ).Distinct().ToListAsync();
+
+                // 🔹 Convert List to String
+                var towardsText = string.Join(", ", purchaseTypes);
+
+                // 🔹 Final Response
+                var result = new VoucherDto
+                {
+                    PaidTo = employee,
+
+                    Amount = totalAmount,
+
+                    RupeesInWords = NumberToWords((long)totalAmount) + " Rupees Only",
+
+                    Towards = towardsText,
+
+                    Date = DateTime.Now
+                };
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Message = ex.Message
+                });
+            }
+        }
+
+
+        // 🔹 NUMBER TO WORDS METHOD
+        private static string NumberToWords(long number)
+        {
+            if (number == 0)
+                return "Zero";
+
+            if (number < 0)
+                return "Minus " + NumberToWords(Math.Abs(number));
+
+            string words = "";
+
+            if ((number / 1000000) > 0)
+            {
+                words += NumberToWords(number / 1000000) + " Million ";
+                number %= 1000000;
+            }
+
+            if ((number / 1000) > 0)
+            {
+                words += NumberToWords(number / 1000) + " Thousand ";
+                number %= 1000;
+            }
+
+            if ((number / 100) > 0)
+            {
+                words += NumberToWords(number / 100) + " Hundred ";
+                number %= 100;
+            }
+
+            if (number > 0)
+            {
+                if (words != "")
+                    words += "and ";
+
+                string[] unitsMap =
+                {
+            "Zero","One","Two","Three","Four","Five","Six","Seven",
+            "Eight","Nine","Ten","Eleven","Twelve","Thirteen",
+            "Fourteen","Fifteen","Sixteen","Seventeen","Eighteen","Nineteen"
+        };
+
+                string[] tensMap =
+                {
+            "Zero","Ten","Twenty","Thirty","Forty","Fifty",
+            "Sixty","Seventy","Eighty","Ninety"
+        };
+
+                if (number < 20)
+                    words += unitsMap[number];
+                else
+                {
+                    words += tensMap[number / 10];
+
+                    if ((number % 10) > 0)
+                        words += " " + unitsMap[number % 10];
+                }
+            }
+
+            return words;
+        }
     }
+
+
 }
+
 

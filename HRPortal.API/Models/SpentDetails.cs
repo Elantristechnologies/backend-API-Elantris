@@ -18,10 +18,6 @@ namespace HRPortal.API.Models
 
 
 
-
-
-
-
         public DateTime? Date { get; set; }
 
         public bool? IsActive { get; set; }
