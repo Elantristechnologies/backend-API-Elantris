@@ -276,7 +276,11 @@ namespace HRPortal.API.Controllers
 
                         employee.ConfirmationDate,
 
-                        employee.GradeId
+                        employee.GradeId,
+
+                        employee.Gender,
+
+                        employee.MaritalStatus
                     },
 
                     hrAdmin = hrAdmin

@@ -10,6 +10,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using System.Collections;
 using System.Data.Common;
+using System.Net;
 namespace HRPortal.API.Controllers
 {
     [Route("api/[controller]")]
@@ -973,6 +974,136 @@ namespace HRPortal.API.Controllers
         //        });
         //    }
         //}
+      
+
+
+       
+
+
+        [HttpPost("spent")]
+        public async Task<IActionResult> AddSpent([FromForm] SpentCreateDto dto)
+        {
+            try
+            {
+                if (dto == null)
+                    return BadRequest("DTO is null");
+
+                var model = new SpentAmount
+                {
+                    Date = dto.Date,
+                    PurchaseItem = dto.PurchaseItem,
+                    Amount = dto.Amount,
+                    Remarks = dto.Remarks,
+                    employee_id = dto.employee_id,
+                    IsActive = true
+                };
+
+                // FILE UPLOAD
+                if (dto.billFile != null && dto.billFile.Length > 0)
+                {
+                    // SAFE WEBROOT
+                    var webRoot = _environment.WebRootPath;
+
+                    if (string.IsNullOrEmpty(webRoot))
+                    {
+                        webRoot = Path.Combine(
+                            Directory.GetCurrentDirectory(),
+                            "wwwroot");
+                    }
+
+                    // Folder Path
+                    var folderPath = Path.Combine(
+                        webRoot,
+                        "Uploads",
+                        "Bills");
+
+                    // Create Folder
+                    if (!Directory.Exists(folderPath))
+                    {
+                        Directory.CreateDirectory(folderPath);
+                    }
+
+                    // Unique File Name
+                    var fileName = Guid.NewGuid().ToString()
+                                 + Path.GetExtension(dto.billFile.FileName);
+
+                    // Full File Path
+                    var filePath = Path.Combine(folderPath, fileName);
+
+                    // Save File
+                    using (var stream = new FileStream(filePath, FileMode.Create))
+                    {
+                        await dto.billFile.CopyToAsync(stream);
+                    }
+
+                    // DB Path
+                    model.BillFile = $"Uploads/Bills/{fileName}";
+                }
+
+                _context.SpentAmounts.Add(model);
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    message = "Spent added successfully",
+                    file = model.BillFile
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ex.Message);
+            }
+        }
+
+        [HttpGet("bill/{*fileName}")]
+        public IActionResult GetBill(string fileName)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(fileName))
+                    return BadRequest("Invalid file name");
+
+                // 🔥 DECODE URL
+                fileName = WebUtility.UrlDecode(fileName);
+
+                // FULL PATH
+                var path = Path.Combine(
+                    _environment.WebRootPath,
+                    fileName);
+
+                // CHECK FILE
+                if (!System.IO.File.Exists(path))
+                {
+                    return Ok(new
+                    {
+                        message = "File not found",
+                        searchedPath = path
+                    });
+                }
+
+                // CONTENT TYPE
+                var extension = Path.GetExtension(fileName).ToLower();
+
+                var contentType = extension switch
+                {
+                    ".pdf" => "application/pdf",
+                    ".jpg" => "image/jpeg",
+                    ".jpeg" => "image/jpeg",
+                    ".png" => "image/png",
+                    _ => "application/octet-stream"
+                };
+
+                // VIEW
+                return PhysicalFile(path, contentType);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ex.Message);
+            }
+        }
+
+
         [HttpGet("spent_new")]
         public async Task<IActionResult> GetSpent()
         {
@@ -1011,47 +1142,6 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
-
-
-        [HttpGet("bill/{fileName}")]
-        public IActionResult GetBill(string fileName)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(fileName))
-                    return BadRequest("Invalid file name");
-
-                var path = Path.Combine(
-                    Directory.GetCurrentDirectory(),
-                    "Uploads", 
-                    "Bills",
-                    fileName);
-
-                if (!System.IO.File.Exists(path))
-                    return NotFound("File not found");
-
-                // Optional: content type detect
-                var contentType = "application/octet-stream";
-
-                if (fileName.EndsWith(".pdf"))
-                    contentType = "application/pdf";
-                else if (fileName.EndsWith(".jpg") || fileName.EndsWith(".jpeg"))
-                    contentType = "image/jpeg";
-                else if (fileName.EndsWith(".png"))
-                    contentType = "image/png";
-
-                return PhysicalFile(path, contentType, fileName);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    message = "Error while fetching file",
-                    error = ex.Message
-                });
-            }
-        }
-
 
         ///-------Accees Controll Api -----///
         //[Authorize]
@@ -1149,277 +1239,278 @@ namespace HRPortal.API.Controllers
             }
         }
 
-        [HttpPost("spent")]
-        public async Task<IActionResult> AddSpent([FromForm] SpentCreateDto dto)
-        {
-            try
-            {
-                if (dto == null)
-                    return BadRequest("DTO is null");
+        //[HttpPost("spent")]
+        //public async Task<IActionResult> AddSpent([FromForm] SpentCreateDto dto)
+        //{
+        //    try
+        //    {
+        //         if (dto == null)
+        //            return BadRequest("DTO is null");
 
-                var model = new SpentAmount
-                {
-                    Date = dto.Date,
-                    PurchaseItem = dto.PurchaseItem,
-                    Amount = dto.Amount,
-                    Remarks = dto.Remarks,
-                    employee_id = dto.employee_id,
-                    IsActive = true
-                };
+        //        var model = new SpentAmount
+        //        {
+        //            Date = dto.Date,
+        //            PurchaseItem = dto.PurchaseItem,
+        //            Amount = dto.Amount,
+        //            Remarks = dto.Remarks,
+        //            employee_id = dto.employee_id,
+        //            IsActive = true
+        //        };
 
-                // 🔹 FILE UPLOAD OPTIONAL
-                if (dto.billFile != null && dto.billFile.Length > 0)
-                {
-                    // Folder Path
-                    var folderPath = Path.Combine(
-                        _environment.WebRootPath,
-                        "Uploads",
-                        "Bills");
+        //        // 🔹 FILE UPLOAD OPTIONAL
+        //        if (dto.billFile != null && dto.billFile.Length > 0)
+        //        {
+        //            // Folder Path
+        //            var folderPath = Path.Combine(
+        //                _environment.WebRootPath,
+        //                "Uploads",
+        //                "Bills");
 
-                    // Create Folder
-                    if (!Directory.Exists(folderPath))
-                    {
-                        Directory.CreateDirectory(folderPath);
-                    }
+        //            // Create Folder
+        //            if (!Directory.Exists(folderPath))
+        //            {
+        //                Directory.CreateDirectory(folderPath);
+        //            }
 
-                    // Unique File Name
-                    var fileName = Guid.NewGuid().ToString()
-                                   + Path.GetExtension(dto.billFile.FileName);
+        //            // Unique File Name
+        //            var fileName = Guid.NewGuid().ToString()
+        //                           + Path.GetExtension(dto.billFile.FileName);
 
-                    // Full Path
-                    var filePath = Path.Combine(folderPath, fileName);
+        //            // Full Path
+        //            var filePath = Path.Combine(folderPath, fileName);
 
-                    // Save File
-                    using (var stream = new FileStream(filePath, FileMode.Create))
-                    {
-                        await dto.billFile.CopyToAsync(stream);
-                        await stream.FlushAsync();
-                    }
+        //            // Save File
+        //            using (var stream = new FileStream(filePath, FileMode.Create))
+        //            {
+        //                await dto.billFile.CopyToAsync(stream);
+        //                await stream.FlushAsync();
+        //            }
 
-                    // Save Path in DB
-                    model.BillFile = Path.Combine("Uploads", "Bills", fileName)
-                        .Replace("\\", "/");
-                }
+        //            // Save Path in DB
+        //            model.BillFile = Path.Combine("Uploads", "Bills", fileName)
+        //                .Replace("\\", "/");
+        //        }
 
-                // 🔹 SAVE DATA EVEN WITHOUT FILE
-                _context.SpentAmounts.Add(model);
+        //        // 🔹 SAVE DATA EVEN WITHOUT FILE
+        //        _context.SpentAmounts.Add(model);
 
-                await _context.SaveChangesAsync();
+        //        await _context.SaveChangesAsync();
 
-                return Ok(new
-                {
-                    message = "Spent added successfully",
-                    fileName = model.BillFile
-                });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, ex.Message);
-            }
-        }
+        //        return Ok(new
+        //        {
+        //            message = "Spent added successfully",
+        //            fileName = model.BillFile
+        //        });
+        //    }
+        //    catch (Exception ex) 
+        //    {
+        //        return StatusCode(500, ex.Message);
+        //    }
+        //}
 
-        [HttpGet("spent-template")]
-        public async Task<IActionResult> DownloadSpentTemplate()
-        {
-            try
-            {
-                using var workbook = new XLWorkbook();
+        
+        //[HttpGet("spent-template")]
+        //public async Task<IActionResult> DownloadSpentTemplate()
+        //{
+        //    try
+        //    {
+        //        using var workbook = new XLWorkbook();
 
-                // ======================================
-                // MAIN SHEET
-                // ======================================
-                var ws = workbook.Worksheets.Add("Expense");
+        //        // ======================================
+        //        // MAIN SHEET
+        //        // ======================================
+        //        var ws = workbook.Worksheets.Add("Expense");
 
-                ws.Cell("A1").Value = "Date";
-                ws.Cell("B1").Value = "Purchase Type";
-                ws.Cell("C1").Value = "Amount";
-                ws.Cell("D1").Value = "Bill File";
-                ws.Cell("E1").Value = "Remarks";
-                ws.Cell("F1").Value = "PurchaseTypeId";
+        //        ws.Cell("A1").Value = "Date";
+        //        ws.Cell("B1").Value = "Purchase Type";
+        //        ws.Cell("C1").Value = "Amount";
+        //        ws.Cell("D1").Value = "Bill File";
+        //        ws.Cell("E1").Value = "Remarks";
+        //        ws.Cell("F1").Value = "PurchaseTypeId";
 
-                // ======================================
-                // HEADER STYLE (YELLOW)
-                // ======================================
-                var headerRange = ws.Range("A1:F1");
-                headerRange.Style.Font.Bold = true;
-                headerRange.Style.Font.FontColor = XLColor.Black;
-                headerRange.Style.Fill.BackgroundColor = XLColor.Yellow;
-                headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-                headerRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-                headerRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
-                headerRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+        //        // ======================================
+        //        // HEADER STYLE (YELLOW)
+        //        // ======================================
+        //        var headerRange = ws.Range("A1:F1");
+        //        headerRange.Style.Font.Bold = true;
+        //        headerRange.Style.Font.FontColor = XLColor.Black;
+        //        headerRange.Style.Fill.BackgroundColor = XLColor.Yellow;
+        //        headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+        //        headerRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+        //        headerRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+        //        headerRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
 
-                ws.Row(1).Height = 25;
+        //        ws.Row(1).Height = 25;
 
-                // ======================================
-                // DATE FORMAT
-                // ======================================
-                ws.Range("A2:A500").Style.DateFormat.Format = "dd-MM-yyyy";
+        //        // ======================================
+        //        // DATE FORMAT
+        //        // ======================================
+        //        ws.Range("A2:A500").Style.DateFormat.Format = "dd-MM-yyyy";
 
-                // ======================================
-                // FETCH PURCHASE TYPES
-                // ======================================
-                var purchaseTypes = await _context.PurchaseTypes
-                    .OrderBy(x => x.Name)
-                    .ToListAsync();
+        //        // ======================================
+        //        // FETCH PURCHASE TYPES
+        //        // ======================================
+        //        var purchaseTypes = await _context.PurchaseTypes
+        //            .OrderBy(x => x.Name)
+        //            .ToListAsync();
 
-                // ======================================
-                // LIST SHEET
-                // A = ID
-                // B = NAME
-                // ======================================
-                var listSheet = workbook.Worksheets.Add("Lists");
+        //        // ======================================
+        //        // LIST SHEET
+        //        // A = ID
+        //        // B = NAME
+        //        // ======================================
+        //        var listSheet = workbook.Worksheets.Add("Lists");
 
-                for (int i = 0; i < purchaseTypes.Count; i++)
-                {
-                    listSheet.Cell(i + 1, 1).Value = purchaseTypes[i].Id;
-                    listSheet.Cell(i + 1, 2).Value = purchaseTypes[i].Name;
-                }
+        //        for (int i = 0; i < purchaseTypes.Count; i++)
+        //        {
+        //            listSheet.Cell(i + 1, 1).Value = purchaseTypes[i].Id;
+        //            listSheet.Cell(i + 1, 2).Value = purchaseTypes[i].Name;
+        //        }
 
-                listSheet.Hide();
+        //        listSheet.Hide();
 
-                // ======================================
-                // DROPDOWN
-                // ======================================
-                var validation = ws.Range("B2:B500").CreateDataValidation();
+        //        // ======================================
+        //        // DROPDOWN
+        //        // ======================================
+        //        var validation = ws.Range("B2:B500").CreateDataValidation();
 
-                validation.IgnoreBlanks = true;
-                validation.InCellDropdown = true;
-                validation.ShowErrorMessage = true;
-                validation.ErrorTitle = "Invalid Selection";
-                validation.ErrorMessage = "Please select from dropdown only.";
+        //        validation.IgnoreBlanks = true;
+        //        validation.InCellDropdown = true;
+        //        validation.ShowErrorMessage = true;
+        //        validation.ErrorTitle = "Invalid Selection";
+        //        validation.ErrorMessage = "Please select from dropdown only.";
 
-                validation.List($"=Lists!$B$1:$B${purchaseTypes.Count}");
+        //        validation.List($"=Lists!$B$1:$B${purchaseTypes.Count}");
 
-                // ======================================
-                // AUTO FILL PURCHASE TYPE ID IN COLUMN F
-                // ======================================
-                for (int row = 2; row <= 500; row++)
-                {
-                    ws.Cell(row, 6).FormulaA1 =
-                        $"=IFERROR(INDEX(Lists!A:A,MATCH(B{row},Lists!B:B,0)),\"\")";
-                }
+        //        // ======================================
+        //        // AUTO FILL PURCHASE TYPE ID IN COLUMN F
+        //        // ======================================
+        //        for (int row = 2; row <= 500; row++)
+        //        {
+        //            ws.Cell(row, 6).FormulaA1 =
+        //                $"=IFERROR(INDEX(Lists!A:A,MATCH(B{row},Lists!B:B,0)),\"\")";
+        //        }
 
-                // Hide Column F
-                ws.Column("F").Hide();
+        //        // Hide Column F
+        //        ws.Column("F").Hide();
 
-                // ======================================
-                // DATA AREA STYLE
-                // ======================================
-                var dataRange = ws.Range("A2:F500");
+        //        // ======================================
+        //        // DATA AREA STYLE
+        //        // ======================================
+        //        var dataRange = ws.Range("A2:F500");
 
-                dataRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
-                dataRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
-                dataRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+        //        dataRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+        //        dataRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+        //        dataRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
 
-                // Amount align right
-                ws.Range("C2:C500").Style.Alignment.Horizontal =
-                    XLAlignmentHorizontalValues.Right;
+        //        // Amount align right
+        //        ws.Range("C2:C500").Style.Alignment.Horizontal =
+        //            XLAlignmentHorizontalValues.Right;
 
-                // Remarks wrap text
-                ws.Range("E2:E500").Style.Alignment.WrapText = true;
+        //        // Remarks wrap text
+        //        ws.Range("E2:E500").Style.Alignment.WrapText = true;
 
-                // ======================================
-                // COLUMN WIDTH
-                // ======================================
-                ws.Column("A").Width = 15;
-                ws.Column("B").Width = 28;
-                ws.Column("C").Width = 15;
-                ws.Column("D").Width = 20;
-                ws.Column("E").Width = 35;
-                ws.Column("F").Width = 15;
+        //        // ======================================
+        //        // COLUMN WIDTH
+        //        // ======================================
+        //        ws.Column("A").Width = 15;
+        //        ws.Column("B").Width = 28;
+        //        ws.Column("C").Width = 15;
+        //        ws.Column("D").Width = 20;
+        //        ws.Column("E").Width = 35;
+        //        ws.Column("F").Width = 15;
 
-                // Freeze header
-                ws.SheetView.FreezeRows(1);
+        //        // Freeze header
+        //        ws.SheetView.FreezeRows(1);
 
-                // ======================================
-                // RETURN FILE
-                // ======================================
-                using var stream = new MemoryStream();
-                workbook.SaveAs(stream);
-                stream.Position = 0;
+        //        // ======================================
+        //        // RETURN FILE
+        //        // ======================================
+        //        using var stream = new MemoryStream();
+        //        workbook.SaveAs(stream);
+        //        stream.Position = 0;
 
-                return File(
-                    stream.ToArray(),
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "SpentTemplate.xlsx");
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(ex.Message);
-            }
-        }
+        //        return File(
+        //            stream.ToArray(),
+        //            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        //            "SpentTemplate.xlsx");
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return BadRequest(ex.Message);
+        //    }
+        //}
 
-        [HttpPost("spent-upload")]
-        public async Task<IActionResult> UploadSpentExcel([FromForm] SpentUploadRequest request)
-        {
-            try
-            {
-                if (request?.File == null || request.File.Length == 0)
-                    return BadRequest("Please select excel file");
+        //[HttpPost("spent-upload")]
+        //public async Task<IActionResult> UploadSpentExcel([FromForm] SpentUploadRequest request)
+        //{
+        //    try
+        //    {
+        //        if (request?.File == null || request.File.Length == 0)
+        //            return BadRequest("Please select excel file");
 
-                using var stream = new MemoryStream();
-                await request.File.CopyToAsync(stream);
-                stream.Position = 0;
+        //        using var stream = new MemoryStream();
+        //        await request.File.CopyToAsync(stream);
+        //        stream.Position = 0;
 
-                using var workbook = new XLWorkbook(stream);
-                var ws = workbook.Worksheet(1);
+        //        using var workbook = new XLWorkbook(stream);
+        //        var ws = workbook.Worksheet(1);
 
-                int row = 2;
-                int count = 0;
+        //        int row = 2;
+        //        int count = 0;
 
-                while (!ws.Cell(row, 1).IsEmpty())
-                {
-                    var item = new SpentAmount();
+        //        while (!ws.Cell(row, 1).IsEmpty())
+        //        {
+        //            var item = new SpentAmount();
 
-                    // DATE
-                    var dateText = ws.Cell(row, 1).GetValue<string>().Trim();
+        //            // DATE
+        //            var dateText = ws.Cell(row, 1).GetValue<string>().Trim();
 
-                    if (string.IsNullOrWhiteSpace(dateText))
-                        return BadRequest($"Date missing at row {row}");
+        //            if (string.IsNullOrWhiteSpace(dateText))
+        //                return BadRequest($"Date missing at row {row}");
 
-                    item.Date = Convert.ToDateTime(dateText);
+        //            item.Date = Convert.ToDateTime(dateText);
 
-                    // PURCHASE TYPE ID (Hidden Column F)
-                    var purchaseTypeId = ws.Cell(row, 6).GetValue<int>();
+        //            // PURCHASE TYPE ID (Hidden Column F)
+        //            var purchaseTypeId = ws.Cell(row, 6).GetValue<int>();
 
-                    if (purchaseTypeId == 0)
-                        return BadRequest($"Invalid Purchase Type at row {row}");
+        //            if (purchaseTypeId == 0)
+        //                return BadRequest($"Invalid Purchase Type at row {row}");
 
-                    item.PurchaseItem = purchaseTypeId;
-                   // return;
-                    // AMOUNT
-                    var amountText = ws.Cell(row, 3).GetValue<string>().Trim();
+        //            item.PurchaseItem = purchaseTypeId;
+        //           // return;
+        //            // AMOUNT
+        //            var amountText = ws.Cell(row, 3).GetValue<string>().Trim();
 
-                    if (string.IsNullOrWhiteSpace(amountText))
-                        return BadRequest($"Amount missing at row {row}");
+        //            if (string.IsNullOrWhiteSpace(amountText))
+        //                return BadRequest($"Amount missing at row {row}");
 
-                    item.Amount = Convert.ToDecimal(amountText);
+        //            item.Amount = Convert.ToDecimal(amountText);
 
-                    // BILL FILE
-                    item.BillFile = ws.Cell(row, 4).GetValue<string>().Trim();
+        //            // BILL FILE
+        //            item.BillFile = ws.Cell(row, 4).GetValue<string>().Trim();
 
-                    // REMARKS
-                    item.Remarks = ws.Cell(row, 5).GetValue<string>().Trim();
+        //            // REMARKS
+        //            item.Remarks = ws.Cell(row, 5).GetValue<string>().Trim();
 
-                    item.employee_id = request.employee_id;
-                    item.IsActive = true;
+        //            item.employee_id = request.employee_id;
+        //            item.IsActive = true;
 
-                    _context.SpentAmounts.Add(item);
+        //            _context.SpentAmounts.Add(item);
 
-                    count++;
-                    row++;
-                }
+        //            count++;
+        //            row++;
+        //        }
 
-                await _context.SaveChangesAsync();
+        //        await _context.SaveChangesAsync();
 
-                return Ok($"Inserted Rows: {count}");
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(ex.Message);
-            }
-        }
+        //        return Ok($"Inserted Rows: {count}");
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return BadRequest(ex.Message);
+        //    }
+        //}
         //-------------api for purchaase type--------
 
         // GET: api/purchasetype
