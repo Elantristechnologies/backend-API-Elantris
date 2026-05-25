@@ -58,7 +58,7 @@ namespace HRPortal.API.Data
 
         //--------------------Expenses tracker ----------
         public DbSet<ExpenseMaster> ExpenseMaster { get; set; }
-        
+        public DbSet<ExpenseMasterResponse> ExpenseMasterResponse { get; set; }
         public DbSet<ReceivedAmount> ReceivedAmounts { get; set; }
         public DbSet<SpentAmount> SpentAmounts { get; set; }
         public DbSet<SpentDetails> SpentDetails { get; set; }
@@ -90,6 +90,9 @@ namespace HRPortal.API.Data
             modelBuilder.Entity<EmployeeAccessResultsdto>().HasNoKey();
             modelBuilder.Entity<PayslipDTO>().HasNoKey();
             modelBuilder.Entity<LoginResponseDto>().HasNoKey();
+
+            modelBuilder.Entity<ExpenseMasterResponse>()
+           .HasNoKey();
             modelBuilder.Entity<EmployeeAddress>()
                 .HasOne(a => a.Employee)
                 .WithOne(e => e.Address)

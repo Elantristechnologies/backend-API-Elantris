@@ -738,10 +738,10 @@ namespace HRPortal.API.Controllers
                 // GET
                 if (model.Action?.ToUpper() == "GET")
                 {
-                    var data = await _context.ExpenseMaster
-                        .FromSqlRaw("EXEC SP_ExpenseMaster @Action='GET'")
+                    var data = await _context.ExpenseMasterResponse
+                        .FromSqlRaw("EXEC SP_ExpenseMaster @Action='GET'")               
                         .ToListAsync();
-
+                    data = data.Where(x => x.Status == "Active").ToList();
                     return Ok(new
                     {
                         message = "Data fetched successfully",
@@ -804,23 +804,37 @@ namespace HRPortal.API.Controllers
 
         //[Authorize]
         [HttpDelete("delete/{id}")]
-        public async Task<IActionResult> DeleteReceived(int id)
+        public async Task<IActionResult> DeleteExpense(int id)
         {
             try
             {
-                var data = await _context.ReceivedAmounts.FindAsync(id);
+                // Find record using ExpenseId
+                var data = await _context.ExpenseMaster
+                    .FirstOrDefaultAsync(x => x.ExpenseId == id);
 
+                // Check record exists or not
                 if (data == null)
-                    return NotFound("Data not found");
+                    return NotFound("Expense not found");
 
-                data.IsActive = false;   // soft delete
+                // Soft Delete
+                data.Status = "Inactive";
+
+                // Save changes
                 await _context.SaveChangesAsync();
 
-                return Ok("Deleted successfully");
+                return Ok(new
+                {
+                    message = "Expense deleted successfully",
+                    expenseId = data.ExpenseId,
+                    status = data.Status
+                });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"Error: {ex.Message}");
+                return StatusCode(500, new
+                {
+                    message = ex.Message
+                });
             }
         }
 
