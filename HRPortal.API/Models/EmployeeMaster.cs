@@ -109,14 +109,14 @@ namespace HRPortal.API.Models
         public string? DepartmentName { get; set; }
 
         [Column("date_of_joining")]
-        public DateTime DateOfJoining { get; set; }
+        public DateTime? DateOfJoining { get; set; }
 
         // ✅ CHANGED TO STRING
         [Column("category_id")]
         public string? CategoryId { get; set; }
 
         [Column("created_at")]
-        public DateTime? CreatedAt { get; set; }
+        public DateTime CreatedAt { get; set; }
 
         [Column("updated_at")]
         public DateTime? UpdatedAt { get; set; }
@@ -158,6 +158,8 @@ namespace HRPortal.API.Models
 
         public ICollection<AttendanceMaster>? Attendances { get; set; }
 
-        
+        public int? OrganizationId { get; set; }
+       
+
     }
 }

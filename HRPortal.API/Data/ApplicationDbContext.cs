@@ -13,8 +13,10 @@ namespace HRPortal.API.Data
         {
         }
 
+        public DbSet<OrganizationMaster> OrganizationMasters { get; set; }
+        public DbSet<UsersMaster> UsersMaster { get; set; }
+        
         public DbSet<EmployeeMaster> EmployeeMasters { get; set; }
-       // public DbSet<EmployeeMaster> EmployeeMasters { get; set; }
         public DbSet<EmployeeAddress> EmployeeAddresses { get; set; }
 
         public DbSet<EmployeePersonalDetails> EmployeePersonalDetails { get; set; }
@@ -27,9 +29,9 @@ namespace HRPortal.API.Data
         public DbSet<Shift> Shifts { get; set; }
         public DbSet<WeekOff> WeekOffs { get; set; }
         public DbSet<PayrollHead> PayrollHeads { get; set; }
-      
 
-     
+
+        public DbSet<Designation> Designation { get; set; }
         public DbSet<PayElement> PayElements { get; set; }
         public DbSet<Payroll> Payrolls { get; set; }
         public DbSet<EmployeePayrollSummary> EmployeePayrollSummary { get; set; }
@@ -90,6 +92,7 @@ namespace HRPortal.API.Data
             modelBuilder.Entity<EmployeeAccessResultsdto>().HasNoKey();
             modelBuilder.Entity<PayslipDTO>().HasNoKey();
             modelBuilder.Entity<LoginResponseDto>().HasNoKey();
+            modelBuilder.Entity<OrganizationMaster>().HasKey(x => x.OrganizationId);
 
             modelBuilder.Entity<ExpenseMasterResponse>()
            .HasNoKey();
@@ -152,6 +155,11 @@ namespace HRPortal.API.Data
 
 
             modelBuilder.Entity<CompanyexpenseAccesses>().HasNoKey();
+
+
+            //----Travel Portal----->
+
+            modelBuilder.Entity<ClaimListDto>().HasNoKey();    
         }
     }
 }   

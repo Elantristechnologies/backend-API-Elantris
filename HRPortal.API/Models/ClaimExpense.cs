@@ -2,6 +2,7 @@
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace HRPortal.API.Models
+
 {
 
 
@@ -14,20 +15,28 @@ namespace HRPortal.API.Models
 
         [Column("claim_id")]     // 🔥 FIX
         public int ClaimId { get; set; }
-
-        [Column("expense_type")]
-        public string ExpenseType { get; set; }
+        [Column("travel_id")]
+        public int TravelId { get; set; }
+        [Column("toll_amount")]
+        public decimal? TollAmount { get; set; }
+        [Column("auto_amount")]
+        public decimal? AutoAmount { get; set; }
+        [Column("other_amount")]
+        public decimal? OtherAmount { get; set; }
 
         [Column("expense_date")]
         public DateTime ExpenseDate { get; set; }
-
-        [Column("amount")]
-        public decimal Amount { get; set; }
 
         [Column("remarks")]
         public string Remarks { get; set; }
 
         [Column("document_path")]
         public string DocumentPath { get; set; }
+        [Column("created_at")]
+        public DateTime created_at { get; set; }
+        [Column("is_active")]
+        public bool IsActive { get; set; }
+
+
     }
 }

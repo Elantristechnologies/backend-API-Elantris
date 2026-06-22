@@ -149,26 +149,163 @@ namespace HRPortal.API.Controllers
             }
         }
 
-        [HttpPost("create-claim")]
-        public async Task<IActionResult> CreateClaim(ClaimMaster claim)
+        //[HttpPost("create-claim")]
+        //public async Task<IActionResult> CreateClaim([FromBody] ClaimMaster claim)
+        //{
+        //    try
+        //    {
+        //        // Default values
+        //        claim.CreatedAt = DateTime.Now;
+        //        claim.ClaimYear = DateTime.Now.Year;
+        //        claim.ClaimNo = $"CLM-{DateTime.Now:yyyyMMddHHmmss}";
+        //        claim.TotalAmount = 0;
+        //        claim.Status = "Pending";
+        //        claim.IsActive = true;
+
+        //        _context.ClaimMasters.Add(claim);
+        //        await _context.SaveChangesAsync();
+
+        //        return Ok(new
+        //        {
+        //            message = "Claim created successfully",
+        //            data = claim
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            message = ex.Message,
+        //            innerError = ex.InnerException?.Message,
+        //            stackTrace = ex.StackTrace
+        //        });
+        //    }
+        //}
+
+        [HttpPost("create-complete-claim")]
+        public async Task<IActionResult> CreateCompleteClaim(CreateClaimEntryDto dto)
         {
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+
             try
             {
+                // 1. Create Claim
+                var claim = new ClaimMaster
+                {
+                    EmployeeId = dto.EmployeeId,
+                    ClaimMonth = dto.ClaimMonth,
+                    VehicleType = dto.VehicleType,
+                    FuelType = dto.FuelType,
+                    VehicleNumber = dto.VehicleNumber,
+                    CreatedAt = DateTime.Now,
+                    IsActive = true
+                };
+
                 _context.ClaimMasters.Add(claim);
                 await _context.SaveChangesAsync();
 
-                return Ok(claim);
+                // Generate Claim Number
+                claim.ClaimNo = $"CLM-{DateTime.Now.Year}-{claim.ClaimId:D4}";
+                claim.ClaimYear = DateTime.Now.Year;
+                claim.Status = "Pending";
+
+                await _context.SaveChangesAsync();
+
+                // 2. Create Travel
+                var travel = new ClaimTravel
+                {
+                    ClaimId = claim.ClaimId,
+                    TravelDate = dto.TravelDate,
+                    Purpose = dto.Purpose,
+                    FromLocation = dto.FromLocation,
+                    ToLocation = dto.ToLocation,
+                    KmRun = dto.KmRun,
+                    Amount = dto.TravelAmount,
+                    Remarks = dto.TravelRemarks
+                };
+
+                _context.ClaimTravels.Add(travel);
+                await _context.SaveChangesAsync();
+
+                // 3. Create Food
+                var food = new ClaimFood
+                {
+                    ClaimId = claim.ClaimId,
+                    FoodDate = dto.TravelDate,
+                    Breakfast = dto.Breakfast,
+                    Lunch = dto.Lunch,
+                    Dinner = dto.Dinner,
+                    Amount = dto.FoodAmount
+                };
+
+                _context.ClaimFoods.Add(food);
+
+                // 4. Create Expense (Single Row)
+                var expense = new ClaimExpense
+                {
+                    ClaimId = claim.ClaimId,
+                    TravelId = travel.TravelId,
+                    TollAmount = dto.TollAmount,
+                    AutoAmount = dto.AutoAmount,
+                    OtherAmount = dto.OtherAmount,
+                    ExpenseDate = dto.TravelDate,
+                    Remarks = dto.ExpenseRemarks,
+                    IsActive = true,
+                    created_at = DateTime.Now
+                };
+
+                _context.ClaimExpenses.Add(expense);
+
+                await _context.SaveChangesAsync();
+
+                await transaction.CommitAsync();
+
+                return Ok(new
+                {
+                    message = "Claim Created Successfully",
+                    claimId = claim.ClaimId,
+                    claimNo = claim.ClaimNo,
+                    travelId = travel.TravelId
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+
+                return StatusCode(500, new
+                {
+                    message = "Error while creating claim",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [HttpGet("get-all-claims")]
+        public async Task<IActionResult> GetAllClaims()
+        {
+            try
+            {
+                var claims = await _context.Set<ClaimListDto>()
+                    .FromSqlRaw("EXEC sp_GetAllClaims")
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    count = claims.Count,
+                    data = claims
+                });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
-                    message = "An error occurred while creating claim",
-                    error = ex.Message
+                    success = false,
+                    message = "Error while fetching claims",
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
-
         //[HttpPost("add-travel")]
         //public async Task<IActionResult> AddTravel(ClaimTravel travel)
         //{
@@ -179,73 +316,170 @@ namespace HRPortal.API.Controllers
         //}
 
 
-        [HttpPost("add-travel")]
-        public async Task<IActionResult> AddTravel(ClaimTravel travel)
-        {
-            try
-            {
-                travel.TravelId = 0;
+        //[HttpPost("add-travel")]
+        //public async Task<IActionResult> AddTravel(ClaimTravel travel)
+        //{
+        //    try
+        //    {
+        //        travel.TravelId = 0;
 
-                travel.FromLocation = travel.FromLocation ?? "-";
-                travel.ToLocation = travel.ToLocation ?? "-";
-                travel.Purpose = travel.Purpose ?? "-";
-                travel.Remarks = travel.Remarks ?? "-";
+        //        travel.FromLocation = travel.FromLocation ?? "-";
+        //        travel.ToLocation = travel.ToLocation ?? "-";
+        //        travel.Purpose = travel.Purpose ?? "-";
+        //        travel.Remarks = travel.Remarks ?? "-";
 
-                _context.ClaimTravels.Add(travel);
-                await _context.SaveChangesAsync();
+        //        _context.ClaimTravels.Add(travel);
+        //        await _context.SaveChangesAsync();
 
-                return Ok(travel);
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new
-                {
-                    message = "An error occurred while adding travel claim",
-                    error = ex.InnerException?.Message ?? ex.Message
-                });
-            }
-        }
+        //        return Ok(travel);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return BadRequest(new
+        //        {
+        //            message = "An error occurred while adding travel claim",
+        //            error = ex.InnerException?.Message ?? ex.Message
+        //        });
+        //    }
+        //}
 
 
-        [HttpPost("add-food")]
-        public async Task<IActionResult> AddFood(ClaimFood food)
-        {
-            try
-            {
-                _context.ClaimFoods.Add(food);
-                await _context.SaveChangesAsync();
+        //[HttpPost("add-food")]
+        //public async Task<IActionResult> AddFood(ClaimFood food)
+        //{
+        //    try
+        //    {
+        //        _context.ClaimFoods.Add(food);
+        //        await _context.SaveChangesAsync();
 
-                return Ok(food);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    message = "An error occurred while adding food claim",
-                    error = ex.Message
-                });
-            }
-        }
+        //        return Ok(food);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            message = "An error occurred while adding food claim",
+        //            error = ex.Message
+        //        });
+        //    }
+        //}
 
-        [HttpPost("add-expense")]
-        public async Task<IActionResult> AddExpense(ClaimExpense expense)
-        {
-            try
-            {
-                _context.ClaimExpenses.Add(expense);
-                await _context.SaveChangesAsync();
+        //[HttpPost("add-expense")]
+        //public async Task<IActionResult> AddExpense(ClaimExpense expense)
+        //{
+        //    try
+        //    {
+        //        _context.ClaimExpenses.Add(expense);
+        //        await _context.SaveChangesAsync();
 
-                return Ok(expense);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    message = "An error occurred while adding expense claim",
-                    error = ex.Message
-                });
-            }
-        }
+        //        return Ok(expense);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            message = "An error occurred while adding expense claim",    
+        //            error = ex.Message
+        //        });
+        //    }
+        //}
+
+        //[HttpPost("add-claim-entry")]
+        //public async Task<IActionResult> AddClaimEntry(CreateClaimEntryDto dto)
+        //{
+        //    await using var transaction = await _context.Database.BeginTransactionAsync();
+
+        //    try
+        //    {
+        //        // 1. Validate Claim
+        //        var claim = await _context.ClaimMasters
+        //            .FirstOrDefaultAsync(x => x.ClaimId == dto.ClaimId);
+
+        //        if (claim == null)
+        //        {
+        //            return BadRequest(new
+        //            {
+        //                message = "Invalid Claim Id"
+        //            });
+        //        }
+
+        //        // 2. Travel Entry
+        //        var travel = new ClaimTravel
+        //        {
+        //            ClaimId = dto.ClaimId,
+        //            TravelDate = dto.TravelDate,
+        //            Purpose = dto.Purpose,
+        //            FromLocation = dto.FromLocation,
+        //            ToLocation = dto.ToLocation,
+        //            KmRun = dto.KmRun,
+        //            Amount = dto.TravelAmount,
+        //            Remarks = dto.TravelRemarks
+        //        };
+
+        //        _context.ClaimTravels.Add(travel);
+        //        await _context.SaveChangesAsync(); // TravelId generated here
+
+        //        // 3. Food Entry
+        //        var food = new ClaimFood
+        //        {
+        //            ClaimId = dto.ClaimId,
+        //            FoodDate = dto.TravelDate,
+        //            Breakfast = dto.Breakfast,
+        //            Lunch = dto.Lunch,
+        //            Dinner = dto.Dinner,
+        //            Amount = dto.FoodAmount
+        //        };
+
+        //        _context.ClaimFoods.Add(food);
+        //        await _context.SaveChangesAsync();
+
+        //        // 4. Expense Helper
+        //        void AddExpense(decimal? amount, int typeId)
+        //        {
+        //            if (amount.HasValue && amount.Value > 0)
+        //            {
+        //                _context.ClaimExpenses.Add(new ClaimExpense
+        //                {
+        //                    ClaimId = dto.ClaimId,
+        //                    TravelId = travel.TravelId,
+        //                    Expense_type_id = typeId,
+        //                    ExpenseDate = dto.TravelDate,
+        //                    Amount = amount.Value,
+        //                    Remarks = dto.ExpenseRemarks,
+        //                    created_at = DateTime.Now,
+        //                    IsActive = true
+        //                });
+        //            }
+        //        }
+
+        //        // 5. Expenses
+        //        AddExpense(dto.TollAmount, 1);   // Toll
+        //        AddExpense(dto.AutoAmount, 2);   // Auto
+        //        AddExpense(dto.OtherAmount, 3);  // Others
+
+        //        await _context.SaveChangesAsync();
+
+        //        // 6. Commit Transaction
+        //        await transaction.CommitAsync();
+
+        //        return Ok(new
+        //        {
+        //            message = "Claim Entry Added Successfully",
+        //            claimId = dto.ClaimId,
+        //            travelId = travel.TravelId
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        await transaction.RollbackAsync();
+
+        //        return StatusCode(500, new
+        //        {
+        //            message = "Error while saving claim entry",
+        //            error = ex.InnerException?.Message ?? ex.Message
+        //        });
+        //    }
+        //}
 
         [HttpPost("upload")]
         public async Task<IActionResult> UploadFile(IFormFile file)
@@ -384,8 +618,8 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
-
         [HttpGet("total-expense")]
+
         public async Task<IActionResult> GetTotalExpense(int empId, DateTime date)
         {
             try
@@ -419,43 +653,39 @@ namespace HRPortal.API.Controllers
         }
 
 
-        [HttpPut("update-claim/{id}")]
-        public async Task<IActionResult> UpdateClaim(int id, [FromBody] TravelClaim updatedClaim)
+        [HttpPut("submit-claim/{claimId}")]
+        public async Task<IActionResult> SubmitClaim(int claimId)
         {
             try
             {
-                if (id != updatedClaim.ClaimId)
-                    return BadRequest("Claim ID mismatch");
+                var claimMaster = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x => x.ClaimId == claimId);
 
-                var claim = await _context.TravelClaims
-                    .FirstOrDefaultAsync(x => x.ClaimId == id);
+                if (claimMaster == null)
+                {
+                    return NotFound(new
+                    {
+                        message = "Claim not found"
+                    });
+                }
 
-                if (claim == null)
-                    return NotFound("Claim not found");
-
-                // Update fields
-                claim.Date = updatedClaim.Date;
-                claim.Purpose = updatedClaim.Purpose;
-                claim.VehType = updatedClaim.VehType;
-                claim.FromLoc = updatedClaim.FromLoc;
-                claim.ToLoc = updatedClaim.ToLoc;
-                claim.KmRun = updatedClaim.KmRun;
-                claim.Amount = updatedClaim.Amount;
-                claim.Food = updatedClaim.Food;
-                claim.TollCharge = updatedClaim.TollCharge;
-                claim.Auto = updatedClaim.Auto;
-                claim.Others = updatedClaim.Others;
+                claimMaster.Status = "Submitted";
+                
 
                 await _context.SaveChangesAsync();
 
-                return Ok("Claim updated successfully");
+                return Ok(new
+                {
+                    success = true,
+                    message = "Claim submitted successfully"
+                });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
-                    Message = "An error occurred while updating the claim.",
-                    Error = ex.Message
+                    success = false,
+                    message = ex.Message
                 });
             }
         }
@@ -678,32 +908,9 @@ namespace HRPortal.API.Controllers
 
 
 
-        // Add Received Amount
-        //[HttpPost("received")]
-        //public async Task<IActionResult> AddReceived(ReceivedAmount model)
-        //{
-        //    _context.ReceivedAmounts.Add(model);
-        //    await _context.SaveChangesAsync();
-        //    return Ok(model);
-        //}
-
-        //[Authorize]
-        //[HttpPost("received")]
-        //public async Task<IActionResult> AddReceived(ReceivedAmount model)
-        //{
-        //    model.Id = 0;
-
-        //    var adminId = User.FindFirst("id")?.Value;
-        //    model.Admin_Id = Convert.ToInt32(adminId);
-
-        //    _context.ReceivedAmounts.Add(model);
-        //    await _context.SaveChangesAsync();
-        //    return Ok(model);
-
-        //}
-
         //--- This is add Amount popup Api ------
 
+        [Authorize]
         [HttpGet("GetEmployees")]
         public IActionResult GetEmployees()
         {
@@ -730,6 +937,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
+        [Authorize]
         [HttpPost("expense-master-Add_amount")]
         public async Task<IActionResult> ExpenseMasterApi([FromBody] ExpenseMaster model)
         {
@@ -779,7 +987,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
+        [Authorize]
         [HttpGet("received")]
         public async Task<IActionResult> GetReceived()
         {
@@ -802,7 +1010,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
-        //[Authorize]
+        [Authorize]
         [HttpDelete("delete/{id}")]
         public async Task<IActionResult> DeleteExpense(int id)
         {
@@ -839,7 +1047,7 @@ namespace HRPortal.API.Controllers
         }
 
 
-        //[Au[Authorize]
+        [Authorize]
         [HttpGet("summary")]
         public async Task<IActionResult> GetSummary(int designationId, int employeeId)
         {
@@ -860,24 +1068,28 @@ namespace HRPortal.API.Controllers
                 if (!action) // Full Access
                 {
                     monthReceived = await _context.ExpenseMaster
+                        .Where(x => x.Status == "Active")
                         .Where(x => x.CreatedDate.Month == currentMonth &&
                                     x.CreatedDate.Year == currentYear)
                         .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
 
                     yearReceived = await _context.ExpenseMaster
+                        .Where(x => x.Status == "Active")
                         .Where(x => x.CreatedDate.Year == currentYear)
                         .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
                 }
                 else // Own Data Only
                 {
                     monthReceived = await _context.ExpenseMaster
-                        .Where(x => x.AssignedTo == employeeId)
+                        .Where(x => x.AssignedTo == employeeId &&
+                    x.Status == "Active")
                         .Where(x => x.CreatedDate.Month == currentMonth &&
                                     x.CreatedDate.Year == currentYear)
                         .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
 
                     yearReceived = await _context.ExpenseMaster
-                        .Where(x => x.AssignedTo == employeeId)
+                        .Where(x => x.AssignedTo == employeeId &&
+                    x.Status == "Active")
                         .Where(x => x.CreatedDate.Year == currentYear)
                         .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
                 }
@@ -943,7 +1155,7 @@ namespace HRPortal.API.Controllers
         }
 
 
-
+        [Authorize]
         [HttpGet("spent")]
         public async Task<IActionResult> GetSpents()
         {
@@ -988,12 +1200,12 @@ namespace HRPortal.API.Controllers
         //        });
         //    }
         //}
-      
 
 
-       
 
 
+
+        [Authorize]
         [HttpPost("spent")]
         public async Task<IActionResult> AddSpent([FromForm] SpentCreateDto dto)
         {
@@ -1069,7 +1281,7 @@ namespace HRPortal.API.Controllers
                 return StatusCode(500, ex.Message);
             }
         }
-
+        [Authorize]
         [HttpGet("bill/{*fileName}")]
         public IActionResult GetBill(string fileName)
         {
@@ -1117,7 +1329,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
+         [Authorize]
         [HttpGet("spent_new")]
         public async Task<IActionResult> GetSpent()
         {
@@ -1162,6 +1374,7 @@ namespace HRPortal.API.Controllers
         //[Authorize]
         ///dei idhu irukatum apdye...enaku spent_access mtum thiruba podu podre   ro
         ///
+        [Authorize]
         [HttpGet("Total_Access")]
         public async Task<IActionResult> GetTotalAccess(int designationId, int employeeId)
         {
@@ -1198,7 +1411,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
+        [Authorize]
         [HttpGet("spent_Access")]
         public async Task<IActionResult> SpentAccess(int designationId, int employeeId)
         {
@@ -1226,7 +1439,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
+        [Authorize]
         [HttpDelete("spent/{id}")]
         public async Task<IActionResult> DeleteSpent(int id)
         {
@@ -1253,283 +1466,11 @@ namespace HRPortal.API.Controllers
             }
         }
 
-        //[HttpPost("spent")]
-        //public async Task<IActionResult> AddSpent([FromForm] SpentCreateDto dto)
-        //{
-        //    try
-        //    {
-        //         if (dto == null)
-        //            return BadRequest("DTO is null");
-
-        //        var model = new SpentAmount
-        //        {
-        //            Date = dto.Date,
-        //            PurchaseItem = dto.PurchaseItem,
-        //            Amount = dto.Amount,
-        //            Remarks = dto.Remarks,
-        //            employee_id = dto.employee_id,
-        //            IsActive = true
-        //        };
-
-        //        // 🔹 FILE UPLOAD OPTIONAL
-        //        if (dto.billFile != null && dto.billFile.Length > 0)
-        //        {
-        //            // Folder Path
-        //            var folderPath = Path.Combine(
-        //                _environment.WebRootPath,
-        //                "Uploads",
-        //                "Bills");
-
-        //            // Create Folder
-        //            if (!Directory.Exists(folderPath))
-        //            {
-        //                Directory.CreateDirectory(folderPath);
-        //            }
-
-        //            // Unique File Name
-        //            var fileName = Guid.NewGuid().ToString()
-        //                           + Path.GetExtension(dto.billFile.FileName);
-
-        //            // Full Path
-        //            var filePath = Path.Combine(folderPath, fileName);
-
-        //            // Save File
-        //            using (var stream = new FileStream(filePath, FileMode.Create))
-        //            {
-        //                await dto.billFile.CopyToAsync(stream);
-        //                await stream.FlushAsync();
-        //            }
-
-        //            // Save Path in DB
-        //            model.BillFile = Path.Combine("Uploads", "Bills", fileName)
-        //                .Replace("\\", "/");
-        //        }
-
-        //        // 🔹 SAVE DATA EVEN WITHOUT FILE
-        //        _context.SpentAmounts.Add(model);
-
-        //        await _context.SaveChangesAsync();
-
-        //        return Ok(new
-        //        {
-        //            message = "Spent added successfully",
-        //            fileName = model.BillFile
-        //        });
-        //    }
-        //    catch (Exception ex) 
-        //    {
-        //        return StatusCode(500, ex.Message);
-        //    }
-        //}
-
-        
-        //[HttpGet("spent-template")]
-        //public async Task<IActionResult> DownloadSpentTemplate()
-        //{
-        //    try
-        //    {
-        //        using var workbook = new XLWorkbook();
-
-        //        // ======================================
-        //        // MAIN SHEET
-        //        // ======================================
-        //        var ws = workbook.Worksheets.Add("Expense");
-
-        //        ws.Cell("A1").Value = "Date";
-        //        ws.Cell("B1").Value = "Purchase Type";
-        //        ws.Cell("C1").Value = "Amount";
-        //        ws.Cell("D1").Value = "Bill File";
-        //        ws.Cell("E1").Value = "Remarks";
-        //        ws.Cell("F1").Value = "PurchaseTypeId";
-
-        //        // ======================================
-        //        // HEADER STYLE (YELLOW)
-        //        // ======================================
-        //        var headerRange = ws.Range("A1:F1");
-        //        headerRange.Style.Font.Bold = true;
-        //        headerRange.Style.Font.FontColor = XLColor.Black;
-        //        headerRange.Style.Fill.BackgroundColor = XLColor.Yellow;
-        //        headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-        //        headerRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-        //        headerRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
-        //        headerRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
-
-        //        ws.Row(1).Height = 25;
-
-        //        // ======================================
-        //        // DATE FORMAT
-        //        // ======================================
-        //        ws.Range("A2:A500").Style.DateFormat.Format = "dd-MM-yyyy";
-
-        //        // ======================================
-        //        // FETCH PURCHASE TYPES
-        //        // ======================================
-        //        var purchaseTypes = await _context.PurchaseTypes
-        //            .OrderBy(x => x.Name)
-        //            .ToListAsync();
-
-        //        // ======================================
-        //        // LIST SHEET
-        //        // A = ID
-        //        // B = NAME
-        //        // ======================================
-        //        var listSheet = workbook.Worksheets.Add("Lists");
-
-        //        for (int i = 0; i < purchaseTypes.Count; i++)
-        //        {
-        //            listSheet.Cell(i + 1, 1).Value = purchaseTypes[i].Id;
-        //            listSheet.Cell(i + 1, 2).Value = purchaseTypes[i].Name;
-        //        }
-
-        //        listSheet.Hide();
-
-        //        // ======================================
-        //        // DROPDOWN
-        //        // ======================================
-        //        var validation = ws.Range("B2:B500").CreateDataValidation();
-
-        //        validation.IgnoreBlanks = true;
-        //        validation.InCellDropdown = true;
-        //        validation.ShowErrorMessage = true;
-        //        validation.ErrorTitle = "Invalid Selection";
-        //        validation.ErrorMessage = "Please select from dropdown only.";
-
-        //        validation.List($"=Lists!$B$1:$B${purchaseTypes.Count}");
-
-        //        // ======================================
-        //        // AUTO FILL PURCHASE TYPE ID IN COLUMN F
-        //        // ======================================
-        //        for (int row = 2; row <= 500; row++)
-        //        {
-        //            ws.Cell(row, 6).FormulaA1 =
-        //                $"=IFERROR(INDEX(Lists!A:A,MATCH(B{row},Lists!B:B,0)),\"\")";
-        //        }
-
-        //        // Hide Column F
-        //        ws.Column("F").Hide();
-
-        //        // ======================================
-        //        // DATA AREA STYLE
-        //        // ======================================
-        //        var dataRange = ws.Range("A2:F500");
-
-        //        dataRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
-        //        dataRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
-        //        dataRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-
-        //        // Amount align right
-        //        ws.Range("C2:C500").Style.Alignment.Horizontal =
-        //            XLAlignmentHorizontalValues.Right;
-
-        //        // Remarks wrap text
-        //        ws.Range("E2:E500").Style.Alignment.WrapText = true;
-
-        //        // ======================================
-        //        // COLUMN WIDTH
-        //        // ======================================
-        //        ws.Column("A").Width = 15;
-        //        ws.Column("B").Width = 28;
-        //        ws.Column("C").Width = 15;
-        //        ws.Column("D").Width = 20;
-        //        ws.Column("E").Width = 35;
-        //        ws.Column("F").Width = 15;
-
-        //        // Freeze header
-        //        ws.SheetView.FreezeRows(1);
-
-        //        // ======================================
-        //        // RETURN FILE
-        //        // ======================================
-        //        using var stream = new MemoryStream();
-        //        workbook.SaveAs(stream);
-        //        stream.Position = 0;
-
-        //        return File(
-        //            stream.ToArray(),
-        //            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        //            "SpentTemplate.xlsx");
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return BadRequest(ex.Message);
-        //    }
-        //}
-
-        //[HttpPost("spent-upload")]
-        //public async Task<IActionResult> UploadSpentExcel([FromForm] SpentUploadRequest request)
-        //{
-        //    try
-        //    {
-        //        if (request?.File == null || request.File.Length == 0)
-        //            return BadRequest("Please select excel file");
-
-        //        using var stream = new MemoryStream();
-        //        await request.File.CopyToAsync(stream);
-        //        stream.Position = 0;
-
-        //        using var workbook = new XLWorkbook(stream);
-        //        var ws = workbook.Worksheet(1);
-
-        //        int row = 2;
-        //        int count = 0;
-
-        //        while (!ws.Cell(row, 1).IsEmpty())
-        //        {
-        //            var item = new SpentAmount();
-
-        //            // DATE
-        //            var dateText = ws.Cell(row, 1).GetValue<string>().Trim();
-
-        //            if (string.IsNullOrWhiteSpace(dateText))
-        //                return BadRequest($"Date missing at row {row}");
-
-        //            item.Date = Convert.ToDateTime(dateText);
-
-        //            // PURCHASE TYPE ID (Hidden Column F)
-        //            var purchaseTypeId = ws.Cell(row, 6).GetValue<int>();
-
-        //            if (purchaseTypeId == 0)
-        //                return BadRequest($"Invalid Purchase Type at row {row}");
-
-        //            item.PurchaseItem = purchaseTypeId;
-        //           // return;
-        //            // AMOUNT
-        //            var amountText = ws.Cell(row, 3).GetValue<string>().Trim();
-
-        //            if (string.IsNullOrWhiteSpace(amountText))
-        //                return BadRequest($"Amount missing at row {row}");
-
-        //            item.Amount = Convert.ToDecimal(amountText);
-
-        //            // BILL FILE
-        //            item.BillFile = ws.Cell(row, 4).GetValue<string>().Trim();
-
-        //            // REMARKS
-        //            item.Remarks = ws.Cell(row, 5).GetValue<string>().Trim();
-
-        //            item.employee_id = request.employee_id;
-        //            item.IsActive = true;
-
-        //            _context.SpentAmounts.Add(item);
-
-        //            count++;
-        //            row++;
-        //        }
-
-        //        await _context.SaveChangesAsync();
-
-        //        return Ok($"Inserted Rows: {count}");
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return BadRequest(ex.Message);
-        //    }
-        //}
         //-------------api for purchaase type--------
 
         // GET: api/purchasetype
         // GET purchase types
-        //[Authorize]
+        [Authorize]
         [HttpGet("purchase-types")]
         public async Task<IActionResult> Get()
         {
@@ -1547,7 +1488,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
-        //[Authorize]
+        [Authorize]
         [HttpPost("purchase-type")]
         public async Task<IActionResult> Post([FromBody] PurchaseType model)
         {
@@ -1567,17 +1508,113 @@ namespace HRPortal.API.Controllers
             }
         }
 
+        //[Authorize]
+        //[HttpGet("voucher")]
+        //public async Task<IActionResult> GetVoucher(int employeeId, int month, int year)
+        //{
+        //    try
+        //    {
+        //        // 🔹 Employee Check
+        //        var employee = await _context.EmployeeMasters
+        //            .Where(x => x.EmpId == employeeId)
+        //            .Select(x => x.FullName)
+        //            .FirstOrDefaultAsync();
 
+        //        if (employee == null)
+        //        {
+        //            return NotFound(new
+        //            {
+        //                Message = "Employee Not Found"
+        //            });
+        //        }
+
+        //        // 🔹 Get Selected Month Data
+        //        var spentData = await _context.SpentAmounts
+        //            .Where(x =>
+        //                x.employee_id == employeeId &&
+        //                x.IsActive == true &&
+        //                x.Date.Month == month &&
+        //                x.Date.Year == year
+        //            )
+        //            .ToListAsync();
+
+        //        // 🔹 No Data
+        //        if (!spentData.Any())
+        //        {
+        //            return Ok(new
+        //            {
+        //                success = false,
+        //                message = "No Voucher Found For Selected Month",
+        //                data = (object)null
+        //            });
+        //        }
+
+        //        // 🔹 Total Amount
+        //        var totalAmount = spentData.Sum(x => x.Amount);
+
+        //        // 🔹 Purchase Types
+        //        var purchaseTypes = await (
+        //            from s in _context.SpentAmounts
+
+        //            join p in _context.PurchaseTypes
+        //            on s.PurchaseItem equals p.Id
+
+        //            where s.employee_id == employeeId
+        //                  && s.IsActive == true
+        //                  && s.Date.Month == month
+        //                  && s.Date.Year == year
+
+        //            select p.Name
+
+        //        ).Distinct().ToListAsync();
+
+        //        // 🔹 Convert List to String
+        //        var towardsText = string.Join(", ", purchaseTypes);
+
+        //        // 🔹 Final Response
+        //        var result = new VoucherDto
+        //        {
+        //            PaidTo = employee,
+
+        //            Amount = totalAmount,
+
+        //            RupeesInWords = NumberToWords((long)totalAmount) + " Rupees Only",
+
+        //            Towards = towardsText,
+
+        //            Date = DateTime.Now
+        //        };
+
+        //        return Ok(result);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            Message = ex.Message
+        //        });
+        //    }
+        //}
+
+        [Authorize]
         [HttpGet("voucher")]
         public async Task<IActionResult> GetVoucher(int employeeId, int month, int year)
         {
             try
             {
-                // 🔹 Employee Check
-                var employee = await _context.EmployeeMasters
-                    .Where(x => x.EmpId == employeeId)
-                    .Select(x => x.FullName)
-                    .FirstOrDefaultAsync();
+                // Employee + Personal Details
+                var employee = await (
+                    from e in _context.EmployeeMasters
+                    join p in _context.EmployeePersonalDetails
+                        on e.EmpId equals p.EmpId
+                    where e.EmpId == employeeId
+                    select new
+                    {
+                        e.FullName,
+                        p.Gender,
+                        p.MaritalStatus
+                    }
+                ).FirstOrDefaultAsync();
 
                 if (employee == null)
                 {
@@ -1587,7 +1624,27 @@ namespace HRPortal.API.Controllers
                     });
                 }
 
-                // 🔹 Get Selected Month Data
+                // Generate Title
+                string title = "Mr";
+
+                if (!string.IsNullOrEmpty(employee.Gender))
+                {
+                    var gender = employee.Gender.ToLower();
+                    var maritalStatus = employee.MaritalStatus?.ToLower();
+
+                    if (gender == "female" || gender == "f")
+                    {
+                        title = maritalStatus == "married"
+                            ? "Mrs"
+                            : "Ms";
+                    }
+                    else
+                    {
+                        title = "Mr";
+                    }
+                }
+
+                // Get Selected Month Data
                 var spentData = await _context.SpentAmounts
                     .Where(x =>
                         x.employee_id == employeeId &&
@@ -1597,7 +1654,6 @@ namespace HRPortal.API.Controllers
                     )
                     .ToListAsync();
 
-                // 🔹 No Data
                 if (!spentData.Any())
                 {
                     return Ok(new
@@ -1608,39 +1664,31 @@ namespace HRPortal.API.Controllers
                     });
                 }
 
-                // 🔹 Total Amount
+                // Total Amount
                 var totalAmount = spentData.Sum(x => x.Amount);
 
-                // 🔹 Purchase Types
+                // Purchase Types
                 var purchaseTypes = await (
                     from s in _context.SpentAmounts
-
                     join p in _context.PurchaseTypes
-                    on s.PurchaseItem equals p.Id
-
+                        on s.PurchaseItem equals p.Id
                     where s.employee_id == employeeId
                           && s.IsActive == true
                           && s.Date.Month == month
                           && s.Date.Year == year
-
                     select p.Name
-
                 ).Distinct().ToListAsync();
 
-                // 🔹 Convert List to String
+                // Convert List To String
                 var towardsText = string.Join(", ", purchaseTypes);
 
-                // 🔹 Final Response
+                // Final Response
                 var result = new VoucherDto
                 {
-                    PaidTo = employee,
-
+                    PaidTo = $"{title} {employee.FullName}",
                     Amount = totalAmount,
-
                     RupeesInWords = NumberToWords((long)totalAmount) + " Rupees Only",
-
                     Towards = towardsText,
-
                     Date = DateTime.Now
                 };
 

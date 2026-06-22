@@ -19,5 +19,9 @@ namespace HRPortal.API.Models
 
         [Column("CreatedDate")]
         public DateTime CreatedDate { get; set; }
+        [Column("IsReportingManager")]
+        public bool IsReportingManager { get; set; }
+
+
     }
 }

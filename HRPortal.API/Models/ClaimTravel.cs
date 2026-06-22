@@ -10,7 +10,8 @@ namespace HRPortal.API.Models
         [Column("travel_id")]
         public int TravelId { get; set; }
 
-    
+        [Column("emp_id")]
+        public int EmpId { get; set; }
 
         [Column("claim_id")]
         public int ClaimId { get; set; }

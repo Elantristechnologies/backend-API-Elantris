@@ -1,12 +1,15 @@
-﻿using CsvHelper;
+﻿using Azure.Core;
+using CsvHelper;
 using CsvHelper.Configuration;
 using DocumentFormat.OpenXml.Bibliography;
+using DocumentFormat.OpenXml.Spreadsheet;
 using global::HRPortal.API.Data;
 using HRPortal.API.Data;
 using HRPortal.API.DTOs;
 using HRPortal.API.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Identity.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -38,176 +41,318 @@ namespace HRPortal.API.Controllers
 
         }
 
-        // HR Register
-        [HttpPost("HRregister")]
-        public async Task<IActionResult> Register(HrRegisterDto dto)
+
+        [AllowAnonymous]
+        [HttpPost("Adminregister")]
+        public async Task<IActionResult> Register([FromBody] RegisterDto request)
         {
             try
             {
-                var exists = await _context.HrAdmins
-                    .AnyAsync(x => x.Email == dto.Email);
+                var existingUser = await _context.UsersMaster
+                    .FirstOrDefaultAsync(x => x.Email == request.Email);
 
-                if (exists)
-                    return BadRequest("Email already registered");
-
-                var hr = new HrAdmin
+                if (existingUser != null)
                 {
-                    empcode = dto.empcode,
-                    Email = dto.Email,
-                    PhoneNumber = dto.PhoneNumber,
-                    PasswordHash = dto.Password
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Email already exists"
+                    });
+                }
+
+                var user = new UsersMaster
+                {
+                    Name = request.Name,
+                    Email = request.Email,
+                    PasswordHash = request.Password,
+                    Role = "Admin",
+                    OrganizationId = null,
+                    IsActive = true
                 };
 
-                _context.HrAdmins.Add(hr);
+                _context.UsersMaster.Add(user);
+
                 await _context.SaveChangesAsync();
 
                 return Ok(new
                 {
-                    message = "HR account created successfully"
+                    success = true,
+                    message = "Registration Successful"
                 });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
-                    message = "An error occurred while creating HR account",
+                    success = false,
+                    message = "Registration Failed",
                     error = ex.Message
                 });
             }
         }
 
 
+        //   [AllowAnonymous]
+        //   [HttpPost("login")]
+        //   public async Task<IActionResult> Login(
+        //string userName,
+        //string password,
+        //int checkType)
+        //   {
+        //       try
+        //       {
+        //           HrAdmin? hrAdmin = null;
 
-        ///logimn apiu with jwt token
+        //           // 🔹 Execute SP
+        //           var employees = await _context.LoginResponseDtos
+        //               .FromSqlRaw(
+        //                   "EXEC sp_Login @UserName, @Password",
+        //                   new SqlParameter("@UserName", userName),
+        //                   new SqlParameter("@Password", password)
+        //               )
+        //               .ToListAsync();
 
-        //[AllowAnonymous]
-        //[HttpPost("login")]
-        //public async Task<IActionResult> Login(string userName, string password, int checkType)
-        //{
-        //    try
+        //           var employee = employees.FirstOrDefault();
+
+        //           // 🔹 Invalid Login
+        //           if (employee == null)
+        //           {
+        //               return Unauthorized(new
+        //               {
+        //                   success = false,
+        //                   message = "Invalid Username or Password"
+        //               });
+        //           }
+
+        //           // 🔹 Role
+        //           string role = employee.Role ?? "Employee";
+
+        //           // 🔹 HR Details
+        //           if (role == "HR")
+        //           {
+        //               hrAdmin = await _context.HrAdmins
+        //                   .FirstOrDefaultAsync(x =>
+        //                       x.empcode == employee.EmployeeCode);
+        //           }
+
+        //           // 🔹 JWT Token
+        //           var token = GenerateJwtToken(
+        //               employee.EmailId,
+        //               role,
+        //               employee.OrganizationId                   
+        //           );
+
+        //           // 🔹 Final Response
+        //           return Ok(new
+        //           {
+        //               success = true,
+
+        //               message = "Login successful",
+
+        //               role = role,
+
+        //               token = token,
+
+        //               employee = new
+        //               {
+        //                   employee.EmpId,
+
+        //                   employee.EmployeeCode,
+
+        //                   employee.FullName,
+
+        //                   employee.EmailId,
+
+        //                   employee.Phone,
+
+        //                   employee.DepartmentId,
+
+        //                   employee.DepartmentName,
+
+        //                   employee.DesignationId,
+
+        //                   employee.DesignationName,
+
+        //                   employee.ReportingManagerId,
+
+        //                   employee.ReportingManager_code,
+
+        //                   employee.ReportingManager_name,
+
+        //                   employee.DateOfJoining,
+
+        //                   employee.CategoryId,
+
+        //                   employee.ConfirmationDate,
+
+        //                   employee.GradeId,
+
+        //                   employee.Gender,
+
+        //                   employee.MaritalStatus,
+
+        //                   employee.OrganizationId
+        //               },
+
+        //               hrAdmin = hrAdmin
+        //           });
+        //       }
+        //       catch (Exception ex)
+        //       {
+        //           return StatusCode(500, new
+        //           {
+        //               success = false,
+
+        //               message = "Error occurred",
+
+        //               error = ex.Message
+        //           });
+        //       }
+        //   }
+
+        //    [AllowAnonymous]
+        //    [HttpPost("login")]
+        //    public async Task<IActionResult> Login(
+        //string userName,
+        //string password,
+        //int checkType)
         //    {
-        //        HrAdmin? hrAdmin = null;
-        //        EmployeeMaster? employee = null;
-
-        //        var employees = await _context.EmployeeMasters
-        //            .FromSqlRaw(
-        //                "EXEC sp_Login @UserName, @Password, @CheckType",
-        //                new SqlParameter("@UserName", userName),
-        //                new SqlParameter("@Password", password),
-        //                new SqlParameter("@CheckType", checkType)
-        //            )
-        //            .ToListAsync();
-
-        //        // 🔥 ID வைத்து Name Mapping
-        //        foreach (var emp in employees)
+        //        try
         //        {
-        //            // Department Name
-        //            emp.DepartmentName = await _context.Department_Master
-        //                .Where(d => d.DepartmentId == emp.DepartmentId)
-        //                .Select(d => d.DepartmentName)
-        //                .FirstOrDefaultAsync();
+        //            HrAdmin? hrAdmin = null;
 
-        //            // Designation Name
-        //            emp.DesignationName = await _context.Designations
-        //                .Where(d => d.Id == emp.DesignationId)
-        //                .Select(d => d.Name)
-        //                .FirstOrDefaultAsync();
+        //            var employees = await _context.LoginResponseDtos
+        //                .FromSqlRaw(
+        //                    "EXEC sp_Login @UserName, @Password",
+        //                    new SqlParameter("@UserName", userName),
+        //                    new SqlParameter("@Password", password)
+        //                )
+        //                .ToListAsync();
 
-        //            // Reporting Manager
-        //            var manager = await _context.EmployeeMasters
-        //                .FirstOrDefaultAsync(m => m.EmpId == emp.ReportingManagerId);
+        //            var employee = employees.FirstOrDefault();
 
-        //            if (manager != null)
+        //            if (employee == null || employee.IsSuccess == 0)
         //            {
-        //                emp.ReportingManager_name = manager.FullName;
-        //                emp.ReportingManager_code = manager.EmployeeCode;
+        //                return Unauthorized(new
+        //                {
+        //                    success = false,
+        //                    message = "Invalid Username or Password"
+        //                });
         //            }
-        //        }
 
-        //        employee = employees.FirstOrDefault();
+        //            string role = employee.Role ?? "Employee";
 
-        //        if (employee == null)
-        //        {
-        //            return Unauthorized("Invalid login");
-        //        }
-
-        //        string role = "Employee";
-
-        //        // HR Login
-        //        if (checkType == 0)
-        //        {
-        //            hrAdmin = await _context.HrAdmins
-        //                .FirstOrDefaultAsync(x => x.empcode == employee.EmployeeCode);
-
-        //            role = "HR";
-        //        }
-
-        //        // JWT Token
-        //        var token = GenerateJwtToken(employee.EmailId, role);
-
-        //        return Ok(new
-        //        {
-        //            message = "Login successful",
-        //            token = token,
-
-        //            Employee = new
+        //            if (role == "HR")
         //            {
-        //                employee.EmpId,
-        //                employee.EmployeeCode,
-        //                employee.FullName,
-        //                employee.EmailId,
-        //                employee.Phone,
-        //                employee.DepartmentId,
-        //                employee.DepartmentName,
-        //                employee.DesignationId,
-        //                employee.DesignationName,
-        //                employee.ReportingManagerId,
-        //                employee.ReportingManager_name,
-        //                employee.ReportingManager_code,
-        //                employee.DateOfJoining,
-        //                employee.CategoryId,
-        //                employee.ConfirmationDate,
-        //                employee.GradeId
-        //                //employee.
-        //            },
+        //                hrAdmin = await _context.HrAdmins
+        //                    .FirstOrDefaultAsync(x =>
+        //                        x.empcode == employee.EmployeeCode);
+        //            }
 
-        //            HrAdmin = hrAdmin
-        //        });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return StatusCode(500, new
+        //            var token = GenerateJwtToken(
+        //                employee.EmailId,
+        //                role,
+        //                employee.OrganizationId
+        //            );
+
+        //            bool isOrganizationSetupRequired =
+        //                employee.OrganizationId == null;
+
+        //            bool isProfileSetupRequired =
+        //                string.IsNullOrEmpty(employee.Phone) ||
+        //                employee.DepartmentId == null ||
+        //                employee.DesignationId == null ||
+        //                employee.DateOfJoining == null;
+
+        //            return Ok(new
+        //            {
+        //                success = true,
+
+        //                message = "Login successful",
+
+        //                role = role,
+
+        //                token = token,
+
+        //                IsOrganizationSetupRequired = isOrganizationSetupRequired,
+
+        //                IsProfileSetupRequired = isProfileSetupRequired,
+
+        //                employee = new
+        //                {
+        //                    employee.EmpId,
+
+        //                    employee.EmployeeCode,
+
+        //                    employee.FullName,
+
+        //                    employee.EmailId,
+
+        //                    employee.Phone,
+
+        //                    employee.DepartmentId,
+
+        //                    employee.DepartmentName,
+
+        //                    employee.DesignationId,
+
+        //                    employee.DesignationName,
+
+        //                    employee.ReportingManagerId,
+
+        //                    employee.ReportingManager_code,
+
+        //                    employee.ReportingManager_name,
+
+        //                    employee.DateOfJoining,
+
+        //                    employee.CategoryId,
+
+        //                    employee.ConfirmationDate,
+
+        //                    employee.GradeId,
+
+        //                    employee.Gender,
+
+        //                    employee.MaritalStatus,
+
+        //                    employee.OrganizationId
+        //                },
+
+        //                hrAdmin = hrAdmin
+        //            });
+        //        }
+        //        catch (Exception ex)
         //        {
-        //            message = "Error occurred",
-        //            error = ex.Message
-        //        });
+        //            return StatusCode(500, new
+        //            {
+        //                success = false,
+        //                message = "Error occurred",
+        //                error = ex.Message
+        //            });
+        //        }
         //    }
-        //}
 
         [AllowAnonymous]
         [HttpPost("login")]
         public async Task<IActionResult> Login(
-     string userName,
-     string password,
-     int checkType)
+    string userName,
+    string password,
+    int checkType)
         {
             try
             {
-                HrAdmin? hrAdmin = null;
-
-                // 🔹 Execute SP
                 var employees = await _context.LoginResponseDtos
-                    .FromSqlRaw(
-                        "EXEC sp_Login @UserName, @Password",
-                        new SqlParameter("@UserName", userName),
-                        new SqlParameter("@Password", password)
-                    )
-                    .ToListAsync();
+                .FromSqlRaw(
+                "EXEC sp_Login @UserName, @Password",
+                new SqlParameter("@UserName", userName),
+                new SqlParameter("@Password", password)
+                )
+                .ToListAsync();
 
-                var employee = employees.FirstOrDefault();
+    var employee = employees.FirstOrDefault();
 
-                // 🔹 Invalid Login
-                if (employee == null)
+                if (employee == null || employee.IsSuccess == 0)
                 {
                     return Unauthorized(new
                     {
@@ -216,24 +361,23 @@ namespace HRPortal.API.Controllers
                     });
                 }
 
-                // 🔹 Role
                 string role = employee.Role ?? "Employee";
 
-                // 🔹 HR Details
-                if (role == "HR")
-                {
-                    hrAdmin = await _context.HrAdmins
-                        .FirstOrDefaultAsync(x =>
-                            x.empcode == employee.EmployeeCode);
-                }
-
-                // 🔹 JWT Token
                 var token = GenerateJwtToken(
                     employee.EmailId,
-                    role
+                    role,
+                    employee.OrganizationId
                 );
 
-                // 🔹 Final Response
+                bool isOrganizationSetupRequired =
+                    employee.OrganizationId == null;
+
+                bool isProfileSetupRequired =
+                    string.IsNullOrEmpty(employee.Phone) ||
+                    employee.DepartmentId == null ||
+                    employee.DesignationId == null ||
+                    employee.DateOfJoining == null;
+
                 return Ok(new
                 {
                     success = true,
@@ -244,46 +388,32 @@ namespace HRPortal.API.Controllers
 
                     token = token,
 
+                    IsOrganizationSetupRequired = isOrganizationSetupRequired,
+
+                    IsProfileSetupRequired = isProfileSetupRequired,
+
                     employee = new
                     {
                         employee.EmpId,
-
                         employee.EmployeeCode,
-
                         employee.FullName,
-
                         employee.EmailId,
-
                         employee.Phone,
-
                         employee.DepartmentId,
-
                         employee.DepartmentName,
-
                         employee.DesignationId,
-
                         employee.DesignationName,
-
                         employee.ReportingManagerId,
-
                         employee.ReportingManager_code,
-
                         employee.ReportingManager_name,
-
                         employee.DateOfJoining,
-
                         employee.CategoryId,
-
                         employee.ConfirmationDate,
-
                         employee.GradeId,
-
                         employee.Gender,
-
-                        employee.MaritalStatus
-                    },
-
-                    hrAdmin = hrAdmin
+                        employee.MaritalStatus,
+                        employee.OrganizationId
+                    }
                 });
             }
             catch (Exception ex)
@@ -291,22 +421,27 @@ namespace HRPortal.API.Controllers
                 return StatusCode(500, new
                 {
                     success = false,
-
                     message = "Error occurred",
-
                     error = ex.Message
                 });
             }
-        }
+
+}
 
 
-        private string GenerateJwtToken(string email, string role)
+
+        private string GenerateJwtToken(string email, string role, int? organizationId)
         {
-            var claims = new[]
-            {
+            var claimsList = new List<Claim>
+    {
         new Claim(ClaimTypes.Email, email),
         new Claim(ClaimTypes.Role, role)
     };
+
+            if (organizationId.HasValue)
+            {
+                claimsList.Add(new Claim("OrganizationId", organizationId.Value.ToString()));
+            }
 
             var key = new SymmetricSecurityKey(
                 Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]));
@@ -316,7 +451,7 @@ namespace HRPortal.API.Controllers
             var token = new JwtSecurityToken(
                 issuer: _configuration["Jwt:Issuer"],
                 audience: _configuration["Jwt:Audience"],
-                claims: claims,
+                claims: claimsList,
                 expires: DateTime.Now.AddHours(2),
                 signingCredentials: creds);
 
@@ -324,6 +459,90 @@ namespace HRPortal.API.Controllers
         }
 
 
+        //[Authorize]
+        [HttpPost("create-organization")]
+        public async Task<IActionResult> CreateOrganization([FromBody] OrganizationCreateDto request)
+        {
+            try
+            {
+                var email = User.FindFirst(ClaimTypes.Email)?.Value;
+
+                if (string.IsNullOrEmpty(email))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid token"
+                    });
+                }
+
+                var user = await _context.UsersMaster
+                    .FirstOrDefaultAsync(x => x.Email == email);
+
+                if (user == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "User not found"
+                    });
+                }
+
+                if (user.OrganizationId != null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Organization already assigned"
+                    });
+                }
+
+                var organization = new OrganizationMaster
+                {
+                    OrganizationName = request.OrganizationName,
+                    OrganizationCode = request.OrganizationCode,
+                    Email = request.Email,
+                    Phone = request.Phone,
+                    Address = request.Address,                    
+                    IsActive = true,
+                    CreatedDate = DateTime.Now
+                };
+
+                _context.OrganizationMasters.Add(organization);
+                await _context.SaveChangesAsync();
+
+                user.OrganizationId = organization.OrganizationId;
+
+                var employee = await _context.EmployeeMasters
+                    .FirstOrDefaultAsync(x => x.EmailId == user.Email);
+
+                if (employee != null)
+                {
+                    employee.OrganizationId = organization.OrganizationId;
+                }
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Organization created successfully",
+                    organizationId = organization.OrganizationId
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message,
+                    innerError = ex.InnerException?.Message
+                });
+            }
+        }
+
+
+        //[Authorize]
         [HttpGet("employee/access-control")]
         public async Task<IActionResult> GetAccessControl(int designationId, int Employeeid)
         {
@@ -352,7 +571,9 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
+
         // HR-ADMIN profile update
+        [Authorize]
         [HttpPut("update-profile/{id}")]
         public async Task<IActionResult> UpdateProfile(int id, HrAdmin updated)
         {
@@ -371,6 +592,72 @@ namespace HRPortal.API.Controllers
         }
 
         // all employee dashboard la display pannum Muthu
+        //[Authorize]
+        //[HttpGet]
+        //public async Task<IActionResult> GetEmployees()
+        //{
+        //    try
+        //    {
+        //        var orgIdClaim = User.FindFirst("OrganizationId")?.Value;
+
+        //        int organizationId = Convert.ToInt32(orgIdClaim);
+
+        //        var employees = await (
+        //            from e in _context.EmployeeMasters
+
+        //            join d in _context.Designations
+        //                on e.DesignationId equals d.Id into desigJoin
+        //            from d in desigJoin.DefaultIfEmpty()
+
+        //            join dept in _context.Department_Master
+        //                on e.DepartmentId equals dept.DepartmentId into deptJoin
+        //            from dept in deptJoin.DefaultIfEmpty()
+
+        //            where e.OrganizationId == organizationId
+
+        //            select new
+        //            {
+        //                empId = e.EmpId,
+
+        //                organizationId = e.OrganizationId,
+
+        //                employeeCode = e.EmployeeCode,
+
+        //                fullName = e.FullName,
+
+        //                emailId = e.EmailId,
+
+        //                phone = e.Phone,
+
+        //                departmentId = e.DepartmentId,
+
+        //                departmentName = dept != null
+        //                    ? dept.DepartmentName
+        //                    : null,
+
+        //                designationId = e.DesignationId,
+
+        //                designationName = d != null
+        //                    ? d.Name
+        //                    : null,
+
+        //                dateOfJoining = e.DateOfJoining
+        //            }
+
+        //        ).ToListAsync();
+
+        //        return Ok(employees);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            message = "An error occurred while fetching employees",
+        //            error = ex.Message
+        //        });
+        //    }
+        //}
+        
         [HttpGet]
         public async Task<IActionResult> GetEmployees() //Dhanush
         {
@@ -395,7 +682,7 @@ namespace HRPortal.API.Controllers
                 emailId = e.EmailId,
 
                 departmentId = e.DepartmentId,
-                departmentName = dept.DepartmentName,
+              
                 department = dept != null ? dept.DepartmentName : null,   // ✅ department name
 
                 designationId = e.DesignationId,
@@ -417,22 +704,26 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
-
-        // GET: api/Designation   M]
-        [HttpGet("Designation")]
-        public async Task<IActionResult> GetDesignations()
+        [HttpGet("designation")]
+        public async Task<IActionResult> GetDesignation()
         {
             try
             {
-                var data = await _context.Designations
-                    .OrderBy(x => x.Id)
+                var data = await _context.Designation
+                    .Select(x => new
+                    {
+                        id = x.Id,
+                        name = x.Name,
+                        isReportingManager = x.IsReportingManager,
+                        isActive = x.IsActive,
+                        createdDate = x.CreatedDate
+                    })
+                    .OrderBy(x => x.name)
                     .ToListAsync();
 
                 return Ok(new
                 {
                     success = true,
-                    message = "Designation list fetched successfully",
                     data = data
                 });
             }
@@ -441,52 +732,38 @@ namespace HRPortal.API.Controllers
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Something went wrong",
-                    error = ex.InnerException?.Message ?? ex.Message
+                    message = ex.Message
                 });
             }
         }
 
 
+
+
         // DESIGNATION MASTER ---RAJESH
         [HttpPost("designation")]
         public async Task<IActionResult> DesignationMasterApi(
-    int? id,
-    string? name,
-    string actionType)
+     int? id,
+     string? name,
+     bool isReportingManager,
+     bool isActive,
+     string actionType)
         {
             try
             {
-                // GET
-                if (actionType.ToUpper() == "GET")
-                {
-                    var data = await _context.Designations
-                        .FromSqlRaw(
-                            "EXEC sp_DesignationMaster @Id={0}, @Name={1}, @ActionType={2}",
-                            id,
-                            name,
-                            actionType)
-                        .ToListAsync();
-
-                    return Ok(new
-                    {
-                        success = true,
-                        message = "Designation fetched successfully",
-                        data = data
-                    });
-                }
-
-                // INSERT & DELETE
                 await _context.Database.ExecuteSqlRawAsync(
-                    "EXEC sp_DesignationMaster @Id={0}, @Name={1}, @ActionType={2}",
+                    "EXEC sp_DesignationMaster @Id={0}, @Name={1}, @IsReportingManager={2}, @ActionType={3}, @IsActive={4}",
                     id,
                     name,
-                    actionType);
+                    isReportingManager,
+                    actionType.ToUpper(),
+                    isActive
+                );
 
                 return Ok(new
                 {
                     success = true,
-                    message = actionType + " completed successfully"
+                    message = $"{actionType} completed successfully"
                 });
             }
             catch (Exception ex)
@@ -494,14 +771,13 @@ namespace HRPortal.API.Controllers
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Something went wrong",
-                    error = ex.Message
+                    message = ex.Message
                 });
             }
         }
 
-
         // HR- profile display pannum
+        [Authorize]
         [HttpGet("profile/{id}")]
         public async Task<IActionResult> GetHr(int id)
         {
@@ -527,25 +803,124 @@ namespace HRPortal.API.Controllers
             }
         }
 
+
+
+
+        //[Authorize]
+        [HttpGet("reporting-managers")]
+        public async Task<IActionResult> GetReportingManagers()
+        {
+            try
+            {
+                var orgIdClaim = User.FindFirst("OrganizationId")?.Value;
+
+                if (string.IsNullOrEmpty(orgIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "OrganizationId not found in token"
+                    });
+                }
+
+                int organizationId = int.Parse(orgIdClaim);
+
+                var managers = await (
+                    from e in _context.EmployeeMasters
+                    join d in _context.Designations
+                        on e.DesignationId equals d.Id
+                    where e.OrganizationId == organizationId
+                          && d.Name != "Employee"
+                    select new
+                    {
+                        e.EmpId,
+                        e.EmployeeCode,
+                        e.FullName,
+                        Designation = d.Name
+                    }
+                ).ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    count = managers.Count,
+                    data = managers
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message,
+                    innerError = ex.InnerException?.Message
+                });
+            }
+        }
+
         // employee register 
         // [Authorize]    Muthu
+        //[Authorize]
+        [Authorize]
         [HttpPost("register")]
         public async Task<IActionResult> CreateEmployee([FromBody] EmployeeCreateDto dto)
         {
             try
             {
+                // Get OrganizationId from JWT
+                var orgIdClaim = User.FindFirst("OrganizationId")?.Value;
+
+                if (string.IsNullOrEmpty(orgIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "OrganizationId not found in token"
+                    });
+                }
+
+                int organizationId = int.Parse(orgIdClaim);
+
+                // Email exists check in Employee_Master
                 var emailExists = await _context.EmployeeMasters
                     .AnyAsync(e => e.EmailId == dto.EmailId);
 
                 if (emailExists)
-                    return BadRequest("Email already exists");
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Email already exists"
+                    });
+                }
 
+                // Employee code exists check
                 var codeExists = await _context.EmployeeMasters
                     .AnyAsync(e => e.EmployeeCode == dto.EmployeeCode);
 
                 if (codeExists)
-                    return BadRequest("Employee Code already exists");
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Employee Code already exists"
+                    });
+                }
 
+                // Users_Master email check
+                var userExists = await _context.UsersMaster
+                    .AnyAsync(x => x.Email == dto.EmailId);
+
+                if (userExists)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "User already exists"
+                    });
+                }
+
+                // Employee_Master Insert
                 var employee = new EmployeeMaster
                 {
                     EmployeeCode = dto.EmployeeCode,
@@ -557,30 +932,51 @@ namespace HRPortal.API.Controllers
                     DesignationId = dto.DesignationID,
                     DateOfJoining = dto.DateOfJoining,
                     CategoryId = dto.CategoryId,
+                    Password = dto.password,   // ✔ check here
+                    ReportingManagerId = dto.ReportingManagerId, // ✔ check here
+                    OrganizationId = organizationId,
+
                     CreatedAt = DateTime.UtcNow,
                     UpdatedAt = DateTime.UtcNow
                 };
 
                 _context.EmployeeMasters.Add(employee);
+
+                // Users_Master Insert
+                var user = new UsersMaster
+                {
+                    Name = dto.FullName,
+                    Email = dto.EmailId,
+                    PasswordHash = dto.password, // later hash pannalaam
+                    Role = "Employee",
+                    OrganizationId = organizationId,
+                    IsActive = true,
+                    CreatedAt = DateTime.Now
+                };
+
+                _context.UsersMaster.Add(user);
+
                 await _context.SaveChangesAsync();
 
                 return Ok(new
                 {
-                    message = "Employee registered successfully",
-                    employee.EmpId
+                    success = true,
+                    message = "Employee created successfully",
+                    employeeId = employee.EmpId,
+                    organizationId = organizationId
                 });
             }
             catch (Exception ex)
             {
-                // log error (optional)
                 return StatusCode(500, new
                 {
-                    message = "Something went wrong",
-                    error = ex.Message
+                    success = false,
+                    message = ex.Message,
+                    innerError = ex.InnerException?.Message
                 });
             }
         }
-
+        [Authorize]
         [HttpPost("{id}/employment-information")]
         public async Task<IActionResult> SaveEmploymentInformation(
     int id,
@@ -700,6 +1096,7 @@ namespace HRPortal.API.Controllers
         //    }
 
         //Employment Information GET Muthu
+        [Authorize]
         [HttpGet("{id}/employment-information")]
         public async Task<IActionResult> GetEmploymentInformation(int id)
         {
@@ -802,7 +1199,7 @@ namespace HRPortal.API.Controllers
         //}
 
         // dROPDOWN API FOR REGISTER 
-
+        [Authorize]
         [HttpGet("departments")]
         public async Task<IActionResult> GetDepartments()
         {
@@ -827,7 +1224,7 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
-
+        [Authorize]
         [HttpGet("categories")]
         public async Task<IActionResult> GetCategories()
         {
@@ -855,7 +1252,8 @@ namespace HRPortal.API.Controllers
 
 
         // employee address add only added 
-        // [Authorize]  muthu
+        //   muthu
+        [Authorize]
         [HttpPost("{id}/address")]
         public async Task<IActionResult> SaveAddress(int id, [FromBody] EmployeeAddressDto dto)
         {
@@ -910,6 +1308,7 @@ namespace HRPortal.API.Controllers
             }
         }
         // set address Muthu
+        [Authorize]
         [HttpGet("{id}/address")]
         public async Task<IActionResult> GetAddress(int id)
         {
@@ -976,7 +1375,9 @@ namespace HRPortal.API.Controllers
             }
         }
         // employee personal details only added 
-        //[Authorize]   muthu  full code
+        //  muthu  full code
+
+        [Authorize]
         [HttpPost("{id}/personal-details")]
         public async Task<IActionResult> SavePersonalDetails(int id, [FromBody] EmployeePersonalDetailsDto dto)
         {
@@ -1048,6 +1449,7 @@ namespace HRPortal.API.Controllers
         }
 
         //EDIT EDUCSATION   MUTHU  full code  "AddMultipleEducation alternative "
+        [Authorize]
         [HttpPut("education/{educationId}")]
         public async Task<IActionResult> UpdateEducation(
     int educationId,
@@ -1097,6 +1499,7 @@ namespace HRPortal.API.Controllers
 
         // employee education only added database 
         //  [Authorize]  muthu  full code
+        [Authorize]
         [HttpPost("{id}/education/bulk")]
         public async Task<IActionResult> SaveEducationBulk(
      int id,
@@ -1174,6 +1577,7 @@ namespace HRPortal.API.Controllers
 
 
         // employee compensation only added database 
+        [Authorize]
         [HttpPost("{id}/compensation")]
         public async Task<IActionResult> SaveCompensation(
     int id,
@@ -1235,6 +1639,7 @@ namespace HRPortal.API.Controllers
 
 
         // employee previous-employment only added database 
+        [Authorize]
         [HttpPost("{id}/previous-employment")]
         public async Task<IActionResult> SavePreviousEmployment(
     int id,
@@ -1310,6 +1715,7 @@ namespace HRPortal.API.Controllers
         }
 
         // GET Employee GetPersonalDetails
+        [Authorize]
         [HttpGet("{id}/personal-details")]
         public async Task<IActionResult> GetPersonalDetails(int id)
         {
@@ -1332,6 +1738,8 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
+
+        [Authorize]
         [HttpDelete("{id}/documents/{documentType}")] // muthu  full code 
         public async Task<IActionResult> DeleteEmployeeDocument(
     int id,
@@ -1421,6 +1829,8 @@ namespace HRPortal.API.Controllers
         }
 
         // GET Employee Documents
+
+        [Authorize]
         [HttpGet("{id}/documents")] // muthu  full code
         public async Task<IActionResult> GetEmployeeDocuments(int id)
         {
@@ -1457,6 +1867,7 @@ namespace HRPortal.API.Controllers
         }
 
         // employee UploadDocuments only added database 
+        [Authorize]
         [HttpPost("upload")]
         public async Task<IActionResult> UploadDocuments([FromForm] EmployeeDocumentsDto dto)
         {
@@ -1547,6 +1958,8 @@ namespace HRPortal.API.Controllers
 
 
         // Get Employee Education    // muthu   full code
+
+        [Authorize]
         [HttpGet("{id}/education")]
         public async Task<IActionResult> GetEducation(int id)
         {
@@ -1585,6 +1998,8 @@ namespace HRPortal.API.Controllers
 
 
         // Get Employee Compensation 
+
+        [Authorize]
         [HttpGet("{id}/compensation")]
         public async Task<ActionResult<EmployeeCompensation>> GetCompensation(int id)
         {
@@ -1610,6 +2025,8 @@ namespace HRPortal.API.Controllers
 
 
         // Get Previous Employment
+
+        [Authorize]
         [HttpGet("{id}/previous-employment")]
         public async Task<ActionResult<IEnumerable<EmployeePreviousEmployment>>> GetPreviousEmployment(int id)
         {
@@ -1631,7 +2048,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
+        [Authorize]
         [HttpPost("import")]
         public async Task<IActionResult> ImportAttendance(IFormFile file)
         {
@@ -1764,6 +2181,7 @@ namespace HRPortal.API.Controllers
 
 
         // GET ALL ATTENDANCE
+        [Authorize]
         [HttpGet("attendance")]
         public async Task<IActionResult> GetAttendance()
         {
@@ -1807,6 +2225,7 @@ namespace HRPortal.API.Controllers
             }
         }
         // GET ATTENDANCE BY EMPLOYEE
+        [Authorize]
         [HttpGet("employee/{empId}/attendance")]
         public async Task<IActionResult> GetEmployeeAttendance(int empId)
         {
@@ -1851,6 +2270,7 @@ namespace HRPortal.API.Controllers
         }
 
         //CREATE PAYROLL HEAD
+        [Authorize]
         [HttpPost("add-head")]
         public async Task<IActionResult> AddPayrollHead([FromBody] PayrollHead head)
         {
@@ -1873,6 +2293,7 @@ namespace HRPortal.API.Controllers
 
 
         //  GET ALL PAYROLL HEADS      
+        [Authorize]
         [HttpGet("heads")]
         public async Task<IActionResult> GetPayrollHeads()
         {
@@ -1894,6 +2315,7 @@ namespace HRPortal.API.Controllers
 
 
         // 3️⃣ CREATE PAY ELEMENT
+        [Authorize]
         [HttpPost("add-element")]
         public async Task<IActionResult> AddPayElement([FromBody] PayElement element)
         {
@@ -1940,7 +2362,7 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
-
+        [Authorize]
         //  GET PAY ELEMENTS
         [HttpGet("elements")]
         public async Task<IActionResult> GetPayElements()
@@ -1965,6 +2387,7 @@ namespace HRPortal.API.Controllers
 
 
         // ADD PAYROLL ENTRY + UPDATE SUMMARY  muthu   full code30
+        [Authorize]
         [HttpPost("add-payroll")]
         public async Task<IActionResult> AddPayroll([FromBody] Payroll payroll)
         {
@@ -2097,6 +2520,7 @@ namespace HRPortal.API.Controllers
 
 
         // GET EMPLOYEE PAYROLL
+        [Authorize]
         [HttpGet("employee/{empId}")]
         public async Task<IActionResult> GetEmployeePayroll(int empId)
         {
@@ -2119,7 +2543,7 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
-
+        [Authorize]
         [HttpPost("generate-summary")]
         public async Task<IActionResult> GeneratePayrollSummary([FromBody] EmployeePayrollSummary model)
         {
@@ -2179,7 +2603,7 @@ namespace HRPortal.API.Controllers
 
 
         // Rajesh payslip
-
+        [Authorize]
         [HttpGet("payslip/{employeeId}")]
         public async Task<IActionResult> GetPayslip(int employeeId)
         {
@@ -2256,7 +2680,7 @@ namespace HRPortal.API.Controllers
         }
 
 
-
+        [Authorize]
         [HttpGet("payroll-overview")]
         public async Task<IActionResult> GetPayrollOverview(int empId, int month, string financialYear)
         {
@@ -2316,7 +2740,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
+        [Authorize]
         [HttpGet("employee-payroll-history/{empId}")]
         public async Task<IActionResult> GetPayrollSummary(int empId, int month, string financialYear)
         {
@@ -2344,7 +2768,7 @@ namespace HRPortal.API.Controllers
         }
 
 
-
+        [Authorize]
         [HttpPost("generate-company-overview")]
         public async Task<IActionResult> GenerateCompanyOverview(int month, string year)
         {
@@ -2453,7 +2877,7 @@ namespace HRPortal.API.Controllers
         //        AnnualCTC = summary?.AnnualCtc
         //    });
         //}
-
+        [Authorize]
         [HttpGet("company-payroll-overview")]
         public async Task<IActionResult> GetCompanyPayrollOverview(int month, string financialYear)
         {
@@ -2493,7 +2917,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
+        [Authorize]
         [HttpGet("payroll-summary/{empId}")]
         public async Task<IActionResult> GetPayrollSummary(int empId)
         {
@@ -2527,7 +2951,7 @@ namespace HRPortal.API.Controllers
         }
 
 
-
+        [Authorize]
 
         [HttpPost("save-payroll-summary")]
         public async Task<IActionResult> SavePayrollSummary([FromBody] PayrollSummaryDto dto)

@@ -31,5 +31,7 @@
         public string? Gender { get; set; }
 
         public string? MaritalStatus { get; set; }
+
+        public int? OrganizationId { get; set; }
     }
 }

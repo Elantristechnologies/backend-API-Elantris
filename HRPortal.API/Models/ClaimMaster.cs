@@ -27,5 +27,20 @@ namespace HRPortal.API.Models
 
         [Column("created_at")]
         public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+        [Column("claim_no")]
+        public string? ClaimNo { get; set; }
+
+        [Column("claim_year")]
+        public int? ClaimYear { get; set; }
+
+        [Column("total_amount")]
+        public decimal? TotalAmount { get; set; }
+
+        [Column("status")]
+        public string? Status { get; set; }
+
+        [Column("is_active")]
+        public bool? IsActive { get; set; }
     }
 }
