@@ -1013,7 +1013,7 @@ namespace HRPortal.API.Controllers
                     sql,
                     dto.CategoryId,
                     dto.DepartmentId,
-                    dto.DesignationId,
+                    dto.DesignationId,//HIII HELLO 
                     dto.ReportingManagerId,
                     dto.DateOfJoining,
                     dto.ProbationPeriod,
