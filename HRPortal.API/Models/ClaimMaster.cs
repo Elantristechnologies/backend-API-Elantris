@@ -14,7 +14,7 @@ namespace HRPortal.API.Models
         public int EmployeeId { get; set; }
 
         [Column("claim_month")]
-        public DateTime ClaimMonth { get; set; }
+        public DateTime ClaimMonth { get; set; } //1234
 
         [Column("vehicle_type")]
         public string VehicleType { get; set; }
