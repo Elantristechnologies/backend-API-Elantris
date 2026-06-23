@@ -309,7 +309,7 @@ namespace HRPortal.API.Controllers
         //[HttpPost("add-travel")]
         //public async Task<IActionResult> AddTravel(ClaimTravel travel)
         //{
-        //    _context.ClaimTravels.Add(travel);
+        //    _context.ClaimTravels.Add(travel); 
         //    await _context.SaveChangesAsync();
 
         //    return Ok(travel);
