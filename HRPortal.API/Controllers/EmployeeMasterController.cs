@@ -1014,7 +1014,7 @@ namespace HRPortal.API.Controllers
                     dto.CategoryId,
                     dto.DepartmentId,
                     dto.DesignationId,//HIII HELLO 
-                    dto.ReportingManagerId,
+                    dto.ReportingManagerId,//updated one
                     dto.DateOfJoining,
                     dto.ProbationPeriod,
                     dto.ConfirmationDate,
