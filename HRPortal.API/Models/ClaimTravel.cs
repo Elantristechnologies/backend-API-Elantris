@@ -17,7 +17,7 @@ namespace HRPortal.API.Models
         public int ClaimId { get; set; }
 
         [Column("travel_date")]
-        public DateTime? TravelDate { get; set; }
+        public DateTime? TravelDate { get; set; } //hello commit
 
         [Column("purpose")]
         public string Purpose { get; set; }
