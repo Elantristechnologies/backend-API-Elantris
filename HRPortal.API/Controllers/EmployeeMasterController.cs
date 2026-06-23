@@ -350,7 +350,7 @@ namespace HRPortal.API.Controllers
                 )
                 .ToListAsync();
 
-    var employee = employees.FirstOrDefault();
+                var employee = employees.FirstOrDefault();
 
                 if (employee == null || employee.IsSuccess == 0)
                 {
@@ -426,7 +426,7 @@ namespace HRPortal.API.Controllers
                 });
             }
 
-}
+        }
 
 
 
@@ -503,7 +503,7 @@ namespace HRPortal.API.Controllers
                     OrganizationCode = request.OrganizationCode,
                     Email = request.Email,
                     Phone = request.Phone,
-                    Address = request.Address,                    
+                    Address = request.Address,
                     IsActive = true,
                     CreatedDate = DateTime.Now
                 };
@@ -657,7 +657,7 @@ namespace HRPortal.API.Controllers
         //        });
         //    }
         //}
-        
+
         [HttpGet]
         public async Task<IActionResult> GetEmployees() //Dhanush
         {
@@ -682,7 +682,7 @@ namespace HRPortal.API.Controllers
                 emailId = e.EmailId,
 
                 departmentId = e.DepartmentId,
-              
+
                 department = dept != null ? dept.DepartmentName : null,   // ✅ department name
 
                 designationId = e.DesignationId,
@@ -3019,5 +3019,8 @@ namespace HRPortal.API.Controllers
 
     }
 }
+<<<<<<< HEAD
 
 
+=======
+>>>>>>> 4acdaf392bd86f68ed854808a91c2e1f810afc09

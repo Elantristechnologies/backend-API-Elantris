@@ -159,7 +159,7 @@ namespace HRPortal.API.Models
         public ICollection<AttendanceMaster>? Attendances { get; set; }
 
         public int? OrganizationId { get; set; }
-       
+
 
     }
 }

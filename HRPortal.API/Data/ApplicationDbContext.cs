@@ -15,7 +15,7 @@ namespace HRPortal.API.Data
 
         public DbSet<OrganizationMaster> OrganizationMasters { get; set; }
         public DbSet<UsersMaster> UsersMaster { get; set; }
-        
+
         public DbSet<EmployeeMaster> EmployeeMasters { get; set; }
         public DbSet<EmployeeAddress> EmployeeAddresses { get; set; }
 
@@ -76,14 +76,14 @@ namespace HRPortal.API.Data
 
         //----access control-----
         public DbSet<CompanyexpenseAccesses> CompanyexpenseAccesses { get; set; }
-      
+
         //----expense add amount popup --
 
         public DbSet<EmployeeMaster> EmployeeMaster { get; set; }
 
         public DbSet<Designation> Designations { get; set; }  // muthu
 
-     
+
         public DbSet<EmployeeEmploymentInformation> EmployeeEmploymentInformations { get; set; }  // muthu
         public DbSet<LoginResponseDto> LoginResponseDtos { get; set; } //rajesh
 
@@ -159,7 +159,7 @@ namespace HRPortal.API.Data
 
             //----Travel Portal----->
 
-            modelBuilder.Entity<ClaimListDto>().HasNoKey();    
+            modelBuilder.Entity<ClaimListDto>().HasNoKey();
         }
     }
-}   
+}
