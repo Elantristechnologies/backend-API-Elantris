@@ -3017,10 +3017,6 @@ namespace HRPortal.API.Controllers
             public DateTime? CheckOut { get; set; }
         }
 
+
     }
 }
-<<<<<<< HEAD
-
-
-=======
->>>>>>> 4acdaf392bd86f68ed854808a91c2e1f810afc09
