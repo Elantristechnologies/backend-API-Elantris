@@ -4,9 +4,9 @@
     {
         public int EmployeeId { get; set; }
         public DateTime ClaimMonth { get; set; }
-        public string VehicleType { get; set; }
+        public int VehicleTypeId { get; set; }
         public string VehicleNumber { get; set; }
-        public string FuelType { get; set; }
+        public int FuelTypeId { get; set; }
         // Travel
         public DateTime TravelDate { get; set; }
         public string Purpose { get; set; }

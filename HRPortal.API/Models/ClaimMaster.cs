@@ -16,14 +16,18 @@ namespace HRPortal.API.Models
         [Column("claim_month")]
         public DateTime ClaimMonth { get; set; } //1234
 
-        [Column("vehicle_type")]
-        public string VehicleType { get; set; }
 
         [Column("vehicle_number")]
         public string VehicleNumber { get; set; }
 
-        [Column("fuel_type")]
-        public string FuelType { get; set; }
+        [Column("vehicle_type_id")]
+        public int? VehicleTypeId { get; set; }
+
+        [Column("fuel_type_id")]
+        public int? FuelTypeId { get; set; }
+
+        [Column("vehicle_detail_id")]
+        public int? VehicleDetailId { get; set; }
 
         [Column("created_at")]
         public DateTime CreatedAt { get; set; } = DateTime.Now;

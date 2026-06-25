@@ -194,8 +194,8 @@ namespace HRPortal.API.Controllers
                 {
                     EmployeeId = dto.EmployeeId,
                     ClaimMonth = dto.ClaimMonth,
-                    VehicleType = dto.VehicleType,
-                    FuelType = dto.FuelType,
+                    VehicleTypeId = dto.VehicleTypeId,
+                    FuelTypeId = dto.FuelTypeId,
                     VehicleNumber = dto.VehicleNumber,
                     CreatedAt = DateTime.Now,
                     IsActive = true
@@ -306,6 +306,67 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
+
+        //-----Dropdown api for vehicle types and fueltypes ------>
+        [HttpGet("vehicle-types")]
+        public async Task<IActionResult> GetVehicleTypes()
+        {
+            try
+            {
+                var vehicles = await _context.VehicleMaster
+                    .Where(v => v.IsActive)
+                    .OrderBy(v => v.VehicleName)
+                    .Select(v => new
+                    {
+                        vehicleTypeId = v.VehicleId,
+                        vehicleTypeName = v.VehicleName
+                    })
+                    .ToListAsync();
+
+                return Ok(vehicles);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "Error while fetching vehicle types",
+                    error = ex.Message
+                });
+            }
+        }
+
+
+
+        // Fuel Type dropdown
+        // GET: /api/TravelMaster/fuel-types
+        [HttpGet("fuel-types")]
+        public async Task<IActionResult> GetFuelTypes()
+        {
+            try
+            {
+                var fuels = await _context.FuelTypeMasters
+                    .Where(f => f.IsActive)
+                    .OrderBy(f => f.FuelTypeName)
+                    .Select(f => new
+                    {
+                        fuelTypeId = f.FuelTypeId,
+                        fuelTypeName = f.FuelTypeName
+                    })
+                    .ToListAsync();
+
+                return Ok(fuels);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "Error while fetching fuel types",
+                    error = ex.Message
+                });
+            }
+        }
+
+
         //[HttpPost("add-travel")]
         //public async Task<IActionResult> AddTravel(ClaimTravel travel)
         //{

@@ -45,7 +45,9 @@ namespace HRPortal.API.Data
         public DbSet<CategoryMaster> Category_Master { get; set; }
 
         //-----------------------------Travles -----------------------------
-
+        
+        public DbSet<VehicleMaster> VehicleMaster { get; set; }
+        public DbSet<FuelTypeMaster> FuelTypeMasters { get; set; }
         public DbSet<Vehicle> Vehicles { get; set; }
         public DbSet<Purpose> Purposes { get; set; }
         public DbSet<ClaimMaster> ClaimMasters { get; set; }
