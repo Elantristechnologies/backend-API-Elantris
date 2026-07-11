@@ -11,6 +11,9 @@ namespace HRPortal.API.Models
         [Column("food_id")]   // 🔥 FIX
         public int FoodId { get; set; }
 
+        [Column("travel_id")]
+        public int TravelId { get; set; }
+
         [Column("claim_id")]
         public int ClaimId { get; set; }
 
@@ -18,21 +21,24 @@ namespace HRPortal.API.Models
         public DateTime FoodDate { get; set; }
 
         [Column("breakfast")]
-        public decimal Breakfast { get; set; }
+        public decimal? Breakfast { get; set; }
 
         [Column("lunch")]
-        public decimal Lunch { get; set; }
+        public decimal? Lunch { get; set; }
 
         [Column("dinner")]
-        public decimal Dinner { get; set; }
+        public decimal? Dinner { get; set; }
 
         [Column("invoice_number")]
-        public string InvoiceNumber { get; set; }
+        public string? InvoiceNumber { get; set; }
 
         [Column("amount")]
-        public decimal Amount { get; set; }
+        public decimal? Amount { get; set; }
 
         [Column("document_path")]
-        public string DocumentPath { get; set; }
+        public string? DocumentPath { get; set; }
+
+        [Column("is_active")]
+        public bool IsActive { get; set; } = true;
     }
 }

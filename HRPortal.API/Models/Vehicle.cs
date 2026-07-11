@@ -13,6 +13,11 @@ namespace HRPortal.API.Models
 
         [Column("vehicle_type")]
         public string VehicleType { get; set; }
+        [Column("EmployeeId")]
+        public int EmployeeId { get; set; }
+
+        [Column("is_active")]
+        public bool IsActive { get; set; } = true;
 
         [Column("vehicle_number")]
         public string VehicleNumber { get; set; }

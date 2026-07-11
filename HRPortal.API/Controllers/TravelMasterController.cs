@@ -5,12 +5,18 @@ using HRPortal.API.Data;
 using HRPortal.API.DTOs;
 using HRPortal.API.Models;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using System.Collections;
 using System.Data.Common;
 using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 namespace HRPortal.API.Controllers
 {
     [Route("api/[controller]")]
@@ -19,31 +25,47 @@ namespace HRPortal.API.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly IWebHostEnvironment _environment;
+        private readonly IConfiguration _configuration;
+        private readonly HttpClient _httpClient;
 
 
 
-
-        public TravelMasterController(ApplicationDbContext context, IWebHostEnvironment environment)
+        public TravelMasterController(ApplicationDbContext context, IWebHostEnvironment environment, IConfiguration configuration, HttpClient httpClient)
         {
             _context = context;
             _environment = environment;
-
+            _configuration = configuration;
+            _httpClient = httpClient;
         }
-
         [HttpPost("save")]
-        public async Task<IActionResult> SaveVehicle(Vehicle vehicle)
+        public async Task<IActionResult> SaveVehicle([FromBody] Vehicle vehicle)
         {
             try
             {
                 if (vehicle == null)
                     return BadRequest("Invalid vehicle payload");
 
+                if (vehicle.EmployeeId <= 0)
+                    return BadRequest("EmployeeId is required.");
+
+                // Check employee exists
+                var employeeExists = await _context.EmployeeMaster
+                    .AnyAsync(e => e.EmpId == vehicle.EmployeeId);
+
+                if (!employeeExists)
+                    return BadRequest("Invalid EmployeeId.");
+
                 vehicle.VehicleId = 0;
 
                 _context.Vehicles.Add(vehicle);
                 await _context.SaveChangesAsync();
 
-                return Ok(vehicle);
+                return Ok(new
+                {
+                    success = true,
+                    message = "Vehicle saved successfully",
+                    data = vehicle
+                });
             }
             catch (DbUpdateException dbEx)
             {
@@ -63,25 +85,364 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
-        [HttpGet("all")]
-        public async Task<IActionResult> GetAllVehicles()
+        [Authorize]
+        [HttpGet("my-vehicles")]
+        public async Task<IActionResult> GetMyVehicles()
         {
             try
             {
-                var vehicles = await _context.Vehicles.ToListAsync();
+                //=========================================
+                // Get Employee Id From JWT Token
+                //=========================================
 
-                return Ok(vehicles);
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
+                 
+                if (string.IsNullOrEmpty(empIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Employee Id not found in token."
+                    });
+                }
+
+                int employeeId = Convert.ToInt32(empIdClaim);
+
+                //=========================================
+                // Get Employee Vehicles
+                //=========================================
+
+                var vehicles = await _context.Vehicles
+                    .Where(v => v.EmployeeId == employeeId && v.IsActive)
+                    .Select(v => new
+                    {
+                        v.VehicleId,
+                        v.VehicleNumber,
+                        v.VehicleType,
+                        v.FuelType
+                    })
+                    .ToListAsync();
+
+                if (!vehicles.Any())
+                {
+                    return Ok(new
+                    {
+                        success = true,
+                        message = "No vehicles found.",
+                        data = new List<object>()
+                    });
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Vehicles fetched successfully.",
+                    data = vehicles
+                });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
-                    message = "An error occurred while fetching vehicles",
-                    error = ex.Message
+                    success = false,
+                    message = ex.Message
                 });
             }
         }
+
+
+        //-----------Travel form FROm ANd To localtion and calculate distonse//------//
+
+
+        [HttpGet("location-search")]
+        public async Task<IActionResult> SearchLocation(string text)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(text))
+                    return Ok(new List<LocationResponseDto>());
+
+                var apiKey = _configuration["OpenRouteService:ApiKey"];
+
+                var url =
+                    $"https://api.openrouteservice.org/geocode/autocomplete" +
+                    $"?text={Uri.EscapeDataString(text)}" +
+                    $"&boundary.country=IND" +
+                    $"&size=20";
+
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+
+                // IMPORTANT: OpenRouteService expects Authorization header as plain API key
+                request.Headers.TryAddWithoutValidation("Authorization", apiKey);
+
+                var response = await _httpClient.SendAsync(request);
+
+                var content = await response.Content.ReadAsStringAsync();
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = content
+                    });
+                }
+
+                using JsonDocument doc = JsonDocument.Parse(content);
+
+                var list = new List<LocationResponseDto>();
+
+                foreach (var feature in doc.RootElement.GetProperty("features").EnumerateArray())
+                {
+                    var coord = feature.GetProperty("geometry").GetProperty("coordinates");
+                    var prop = feature.GetProperty("properties");
+
+                    list.Add(new LocationResponseDto
+                    {
+                        Name = prop.GetProperty("label").GetString(),
+                        Latitude = coord[1].GetDouble(),
+                        Longitude = coord[0].GetDouble()
+                    });
+                }
+
+                return Ok(list);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.ToString()
+                });
+            }
+        }
+
+        private int GetLocationPriority(string location)
+        {
+            if (string.IsNullOrWhiteSpace(location))
+                return 3;
+
+            location = location.ToLower();
+
+            if (location.Contains("tamil nadu"))
+                return 1;
+
+            if (location.Contains("chennai") ||
+                location.Contains("coimbatore") ||
+                location.Contains("madurai") ||
+                location.Contains("salem") ||
+                location.Contains("trichy") ||
+                location.Contains("tiruchirappalli") ||
+                location.Contains("vellore") ||
+                location.Contains("erode") ||
+                location.Contains("tiruppur") ||
+                location.Contains("chengalpattu") ||
+                location.Contains("cuddalore") ||
+                location.Contains("kanchipuram") ||
+                location.Contains("tambaram") ||
+                location.Contains("guindy") ||
+                location.Contains("velachery") ||
+                location.Contains("anna nagar") ||
+                location.Contains("adyar") ||
+                location.Contains("t nagar"))
+                return 1;
+
+            return 2;
+        }
+        //-----------------ENd--------------------------------------//
+
+        //-------------------Admin VehicleRate ditails-------------//
+
+        [HttpPost("VehicleRateMasters")]
+        public async Task<IActionResult> AddVehicleRate([FromBody] VehicleRateDto dto)
+        {
+            try
+            {
+                var empIdClaim = User.FindFirst("EmpId");
+
+                if (empIdClaim == null)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Employee Id not found in token."
+                    });
+                }
+
+                int empId = Convert.ToInt32(empIdClaim.Value);
+
+                var exists = await _context.VehicleRateMasters.AnyAsync(x =>
+                    x.VehicleTypeId == dto.VehicleTypeId &&
+                    x.FuelTypeId == dto.FuelTypeId &&
+                    x.ValidFrom.Date == dto.ValidFrom.Date &&
+                    x.IsActive);
+
+                if (exists)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Vehicle rate already exists."
+                    });
+                }
+
+                var vehicleRate = new VehicleRateMaster
+                {
+                    VehicleTypeId = dto.VehicleTypeId,
+                    FuelTypeId = dto.FuelTypeId,
+                    AmountPerLiter = dto.AmountPerLiter,
+                    AmountPerKm = dto.AmountPerKm,
+                    ValidFrom = dto.ValidFrom,
+                    CreatedBy = empId,
+                    IsActive = true,
+                    CreatedDate = DateTime.Now
+                };
+
+                _context.VehicleRateMasters.Add(vehicleRate);
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Vehicle rate added successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+        }
+
+        [HttpGet("VehicleRateMasters")]
+        public async Task<IActionResult> GetVehicleRates()
+        {
+            try
+            {
+                
+                var data = await (
+                    from vr in _context.VehicleRateMasters
+                    join v in _context.VehicleMaster
+                        on vr.VehicleTypeId equals v.VehicleId
+                    join f in _context.FuelTypeMasters
+                        on vr.FuelTypeId equals f.FuelTypeId
+                    where vr.IsActive
+                    select new
+                    {
+                        vr.VehicleRateId,
+                        vr.VehicleTypeId,
+                        VehicleName = v.VehicleName,
+
+                        vr.FuelTypeId,
+                        FuelName = f.FuelTypeName,
+
+                        vr.AmountPerLiter,
+                        vr.AmountPerKm,
+                        vr.ValidFrom,
+                        vr.IsActive
+                    }).ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    data
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+        }
+
+
+        [HttpPut("VehicleRateMasters/{id}")]
+        public async Task<IActionResult> UpdateVehicleRate(int id, [FromBody] VehicleRateDto dto)
+        {
+            try
+            {
+                var vehicleRate = await _context.VehicleRateMasters
+                    .FirstOrDefaultAsync(x => x.VehicleRateId == id && x.IsActive);
+
+                if (vehicleRate == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Vehicle Rate not found."
+                    });
+                }
+
+                vehicleRate.VehicleTypeId = dto.VehicleTypeId;
+                vehicleRate.FuelTypeId = dto.FuelTypeId;
+                vehicleRate.AmountPerLiter = dto.AmountPerLiter;
+                vehicleRate.AmountPerKm = dto.AmountPerKm;
+                vehicleRate.ValidFrom = dto.ValidFrom;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Vehicle Rate updated successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+        }
+
+
+        [HttpDelete("VehicleRateMasters/{id}")]
+        public async Task<IActionResult> DeleteVehicleRate(int id)
+        {
+            try
+            {
+                var vehicleRate = await _context.VehicleRateMasters
+                    .FirstOrDefaultAsync(x => x.VehicleRateId == id && x.IsActive);
+
+                if (vehicleRate == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Vehicle Rate not found."
+                    });
+                }
+
+                vehicleRate.IsActive = false;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Vehicle Rate deleted successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+        }
+        //---------------------------End Admin Api vehicleRate--------------//
+
+
         // GET all purposes
         [HttpGet("purposes")]
         public async Task<IActionResult> GetPurposes()
@@ -149,123 +510,258 @@ namespace HRPortal.API.Controllers
             }
         }
 
-        //[HttpPost("create-claim")]
-        //public async Task<IActionResult> CreateClaim([FromBody] ClaimMaster claim)
+
+
+        //[HttpPost("create-complete-claim")]
+        //public async Task<IActionResult> CreateCompleteClaim(CreateClaimEntryDto dto)
         //{
+        //    await using var transaction = await _context.Database.BeginTransactionAsync();
+
         //    try
         //    {
-        //        // Default values
-        //        claim.CreatedAt = DateTime.Now;
-        //        claim.ClaimYear = DateTime.Now.Year;
-        //        claim.ClaimNo = $"CLM-{DateTime.Now:yyyyMMddHHmmss}";
-        //        claim.TotalAmount = 0;
-        //        claim.Status = "Pending";
-        //        claim.IsActive = true;
+        //        // 1. Create Claim
+        //        var claim = new ClaimMaster
+        //        {
+        //            EmployeeId = dto.EmployeeId,
+        //            ClaimMonth = dto.ClaimMonth,
+        //            VehicleTypeId = dto.VehicleTypeId,
+        //            FuelTypeId = dto.FuelTypeId,
+        //            VehicleNumber = dto.VehicleNumber,
+        //            CreatedAt = DateTime.Now,
+        //            IsActive = true
+        //        };
 
         //        _context.ClaimMasters.Add(claim);
         //        await _context.SaveChangesAsync();
 
+        //        // Generate Claim Number
+        //        claim.ClaimNo = $"CLM-{DateTime.Now.Year}-{claim.ClaimId:D4}";
+        //        claim.ClaimYear = DateTime.Now.Year;
+        //        claim.Status = "Pending";
+
+        //        await _context.SaveChangesAsync();
+
+        //        // 2. Create Travel
+        //        var travel = new ClaimTravel
+        //        {
+        //            ClaimId = claim.ClaimId,
+        //            TravelDate = dto.TravelDate,
+        //            Purpose = dto.Purpose,
+        //            FromLocation = dto.FromLocation,
+        //            ToLocation = dto.ToLocation,
+        //            KmRun = dto.KmRun,
+        //            Amount = dto.TravelAmount,
+        //            Remarks = dto.TravelRemarks
+        //        };
+
+        //        _context.ClaimTravels.Add(travel);
+        //        await _context.SaveChangesAsync();
+
+        //        // 3. Create Food
+        //        var food = new ClaimFood
+        //        {
+        //            ClaimId = claim.ClaimId,
+        //            FoodDate = dto.TravelDate,
+        //            Breakfast = dto.Breakfast,
+        //            Lunch = dto.Lunch,
+        //            Dinner = dto.Dinner,
+        //            Amount = dto.FoodAmount
+        //        };
+
+        //        _context.ClaimFoods.Add(food);
+
+        //        // 4. Create Expense (Single Row)
+        //        var expense = new ClaimExpense
+        //        {
+        //            ClaimId = claim.ClaimId,
+        //            TravelId = travel.TravelId,
+        //            TollAmount = dto.TollAmount,
+        //            AutoAmount = dto.AutoAmount,
+        //            OtherAmount = dto.OtherAmount,
+        //            ExpenseDate = dto.TravelDate,
+        //            Remarks = dto.ExpenseRemarks,
+        //            IsActive = true,
+        //            created_at = DateTime.Now
+        //        };
+
+        //        _context.ClaimExpenses.Add(expense);
+
+        //        await _context.SaveChangesAsync();
+
+        //        await transaction.CommitAsync();
+
         //        return Ok(new
         //        {
-        //            message = "Claim created successfully",
-        //            data = claim
+        //            message = "Claim Created Successfully",
+        //            claimId = claim.ClaimId,
+        //            claimNo = claim.ClaimNo,
+        //            travelId = travel.TravelId
         //        });
         //    }
         //    catch (Exception ex)
         //    {
+        //        await transaction.RollbackAsync();
+
         //        return StatusCode(500, new
         //        {
-        //            message = ex.Message,
-        //            innerError = ex.InnerException?.Message,
-        //            stackTrace = ex.StackTrace
+        //            message = "Error while creating claim",
+        //            error = ex.InnerException?.Message ?? ex.Message
         //        });
         //    }
         //}
 
-        [HttpPost("create-complete-claim")]
-        public async Task<IActionResult> CreateCompleteClaim(CreateClaimEntryDto dto)
+        [HttpPost("create-claim")]
+        public async Task<IActionResult> CreateClaim(
+          [FromBody] CreateClaimDto dto,
+          [FromQuery] bool isSubmit = false)
         {
             await using var transaction = await _context.Database.BeginTransactionAsync();
 
             try
             {
-                // 1. Create Claim
+                if (dto == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Request data is required."
+                    });
+                }
+
+                if (dto.EmployeeId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Invalid Employee."
+                    });
+                }
+
+                if (dto.ClaimEntries == null || !dto.ClaimEntries.Any())
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "At least one claim entry is required."
+                    });
+                }
+
+                // ===========================
+                // Calculate Total Amount
+                // ===========================
+
+                decimal totalAmount = dto.ClaimEntries.Sum(x =>
+                    x.TravelAmount +
+                    x.FoodAmount +
+                    (x.TollAmount ?? 0) +
+                    (x.AutoAmount ?? 0) +
+                    (x.OtherAmount ?? 0));
+
+                // ===========================
+                // Create Claim Master
+                // ===========================
+
                 var claim = new ClaimMaster
                 {
                     EmployeeId = dto.EmployeeId,
                     ClaimMonth = dto.ClaimMonth,
-                    VehicleTypeId = dto.VehicleTypeId,
-                    FuelTypeId = dto.FuelTypeId,
-                    VehicleNumber = dto.VehicleNumber,
+                    ClaimYear = dto.ClaimMonth.Year,
                     CreatedAt = DateTime.Now,
-                    IsActive = true
+                    LastModifiedAt = DateTime.Now,
+                    TotalAmount = totalAmount,
+                    IsActive = true,
+                    Status = isSubmit ? "Submitted" : "Draft",
+                    SubmittedAt = isSubmit ? DateTime.Now : null
                 };
 
                 _context.ClaimMasters.Add(claim);
                 await _context.SaveChangesAsync();
 
-                // Generate Claim Number
                 claim.ClaimNo = $"CLM-{DateTime.Now.Year}-{claim.ClaimId:D4}";
-                claim.ClaimYear = DateTime.Now.Year;
-                claim.Status = "Pending";
-
                 await _context.SaveChangesAsync();
 
-                // 2. Create Travel
-                var travel = new ClaimTravel
+                // ===========================
+                // Save All Entries
+                // ===========================
+
+                foreach (var entry in dto.ClaimEntries)
                 {
-                    ClaimId = claim.ClaimId,
-                    TravelDate = dto.TravelDate,
-                    Purpose = dto.Purpose,
-                    FromLocation = dto.FromLocation,
-                    ToLocation = dto.ToLocation,
-                    KmRun = dto.KmRun,
-                    Amount = dto.TravelAmount,
-                    Remarks = dto.TravelRemarks
-                };
+                    var travel = new ClaimTravel
+                    {
+                        ClaimId = claim.ClaimId,
 
-                _context.ClaimTravels.Add(travel);
-                await _context.SaveChangesAsync();
+                        VehicleTypeId = entry.VehicleTypeId,
+                        FuelTypeId = entry.FuelTypeId,
+                        VehicleDetailId = entry.VehicleDetailId,
+                        VehicleNumber = entry.VehicleNumber,
 
-                // 3. Create Food
-                var food = new ClaimFood
-                {
-                    ClaimId = claim.ClaimId,
-                    FoodDate = dto.TravelDate,
-                    Breakfast = dto.Breakfast,
-                    Lunch = dto.Lunch,
-                    Dinner = dto.Dinner,
-                    Amount = dto.FoodAmount
-                };
+                        TravelDate = entry.TravelDate,
+                        Purpose = entry.Purpose,
+                        FromLocation = entry.FromLocation,
+                        ToLocation = entry.ToLocation,
+                        KmRun = entry.KmRun,
+                        Amount = entry.TravelAmount,
+                        Remarks = entry.TravelRemarks,
+                        DocumentPath = string.Empty
+                    };
 
-                _context.ClaimFoods.Add(food);
+                    _context.ClaimTravels.Add(travel);
+                    await _context.SaveChangesAsync();
 
-                // 4. Create Expense (Single Row)
-                var expense = new ClaimExpense
-                {
-                    ClaimId = claim.ClaimId,
-                    TravelId = travel.TravelId,
-                    TollAmount = dto.TollAmount,
-                    AutoAmount = dto.AutoAmount,
-                    OtherAmount = dto.OtherAmount,
-                    ExpenseDate = dto.TravelDate,
-                    Remarks = dto.ExpenseRemarks,
-                    IsActive = true,
-                    created_at = DateTime.Now
-                };
+                    var food = new ClaimFood
+                    {
+                        TravelId = travel.TravelId,
 
-                _context.ClaimExpenses.Add(expense);
+                        ClaimId = claim.ClaimId,
+                        FoodDate = entry.TravelDate,
+                        Breakfast = entry.Breakfast,
+                        Lunch = entry.Lunch,
+                        Dinner = entry.Dinner,
+                        Amount = entry.FoodAmount,
+                        InvoiceNumber = string.Empty,
+                        DocumentPath = string.Empty
+                    };
 
-                await _context.SaveChangesAsync();
+                    _context.ClaimFoods.Add(food);
+                    await _context.SaveChangesAsync();
+
+                    var expense = new ClaimExpense
+                    {
+                        ClaimId = claim.ClaimId,
+                        TravelId = travel.TravelId,
+
+                        TollAmount = entry.TollAmount,
+                        AutoAmount = entry.AutoAmount,
+                        OtherAmount = entry.OtherAmount,
+
+                        ExpenseDate = entry.TravelDate,
+                        Remarks = entry.ExpenseRemarks,
+
+                        DocumentPath = string.Empty,
+                        created_at = DateTime.Now,
+                        IsActive = true
+                    };
+
+                    _context.ClaimExpenses.Add(expense);
+                    await _context.SaveChangesAsync();
+                }
 
                 await transaction.CommitAsync();
 
                 return Ok(new
                 {
-                    message = "Claim Created Successfully",
-                    claimId = claim.ClaimId,
-                    claimNo = claim.ClaimNo,
-                    travelId = travel.TravelId
+                    success = true,
+                    message = isSubmit
+                        ? "Claim submitted successfully."
+                        : "Claim saved as draft successfully.",
+
+                    data = new
+                    {
+                        claim.ClaimId,
+                        claim.ClaimNo,
+                        claim.Status,
+                        claim.TotalAmount
+                    }
                 });
             }
             catch (Exception ex)
@@ -274,11 +770,14 @@ namespace HRPortal.API.Controllers
 
                 return StatusCode(500, new
                 {
-                    message = "Error while creating claim",
+                    success = false,
+                    message = "Error while saving claim.",
                     error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
+
+
 
         [HttpGet("get-all-claims")]
         public async Task<IActionResult> GetAllClaims()
@@ -307,6 +806,508 @@ namespace HRPortal.API.Controllers
             }
         }
 
+        [HttpGet("my-drafts/{empId}")]
+        public async Task<IActionResult> GetMyDrafts(int empId)
+        {
+            try
+            {
+                var drafts = await _context.ClaimMasters
+                    .Where(x =>
+                        x.EmployeeId == empId &&
+                        x.Status == "Draft" &&
+                        x.IsActive == true)
+                    .OrderByDescending(x => x.CreatedAt)
+                    .Select(x => new
+                    {
+                        x.ClaimId,
+                        x.ClaimNo,
+                        x.ClaimMonth,
+                        x.TotalAmount,
+                        x.Status,
+                        x.CreatedAt
+                    })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    data = drafts
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+        }
+        [HttpDelete("delete-draft/{claimId}")]
+        public async Task<IActionResult> DeleteDraft(int claimId)
+        {
+            await using var transaction =
+                await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                // ==================================
+                // Get Draft Claim
+                // ==================================
+
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == claimId &&
+                        x.Status == "Draft" &&
+                        x.IsActive == true);
+
+                if (claim == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Draft claim not found."
+                    });
+                }
+
+                // ==================================
+                // Soft Delete Claim Master
+                // ==================================
+
+                claim.IsActive = false;
+                claim.LastModifiedAt = DateTime.Now;
+
+                // ==================================
+                // Soft Delete Travels
+                // ==================================
+
+                var travels = await _context.ClaimTravels
+                    .Where(x => x.ClaimId == claimId)
+                    .ToListAsync();
+
+                foreach (var travel in travels)
+                {
+                    travel.IsActive = false;
+                }
+
+                // ==================================
+                // Soft Delete Foods
+                // ==================================
+
+                var foods = await _context.ClaimFoods
+                    .Where(x => x.ClaimId == claimId)
+                    .ToListAsync();
+
+                foreach (var food in foods)
+                {
+                    food.IsActive = false;
+                }
+
+                // ==================================
+                // Soft Delete Expenses
+                // ==================================
+
+                var expenses = await _context.ClaimExpenses
+                    .Where(x => x.ClaimId == claimId)
+                    .ToListAsync();
+
+                foreach (var expense in expenses)
+                {
+                    expense.IsActive = false;
+                }
+
+                // ==================================
+                // Save
+                // ==================================
+
+                await _context.SaveChangesAsync();
+
+                await transaction.CommitAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Draft deleted successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while deleting draft.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [HttpGet("draft-details/{claimId}")]
+        public async Task<IActionResult> GetDraftDetails(int claimId)
+        {
+            try
+            {
+// ===========================
+// Claim Master
+// ===========================
+
+
+    var claim = await _context.ClaimMasters
+        .FirstOrDefaultAsync(x =>
+            x.ClaimId == claimId &&
+            x.Status == "Draft" &&
+            x.IsActive);
+
+                if (claim == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Draft not found."});
+                }
+
+                // ===========================
+                // Get Travels
+                // ===========================
+
+                var travels = await _context.ClaimTravels
+                    .Where(x => x.ClaimId == claimId)
+                    .OrderBy(x => x.TravelId)
+                    .ToListAsync();
+
+                // ===========================
+                // Get Documents
+                // ===========================
+
+                var documents = await _context.ClaimDocuments
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive)
+                    .ToListAsync();
+
+                // ===========================
+                // Build Response
+                // ===========================
+
+                var claimEntries = new List<object>();
+
+                foreach (var travel in travels)
+                {
+                    var food = await _context.ClaimFoods
+                        .FirstOrDefaultAsync(x =>
+                            x.ClaimId == claimId &&
+                            x.TravelId == travel.TravelId);
+
+                    var expense = await _context.ClaimExpenses
+                        .FirstOrDefaultAsync(x =>
+                            x.ClaimId == claimId &&
+                            x.TravelId == travel.TravelId &&
+                            x.IsActive);
+
+                    claimEntries.Add(new
+                    {
+                        travel.TravelId,
+
+                        travel.VehicleTypeId,
+                        travel.FuelTypeId,
+                        travel.VehicleDetailId,
+                        travel.VehicleNumber,
+
+                        travel.TravelDate,
+                        travel.Purpose,
+                        travel.FromLocation,
+                        travel.ToLocation,
+                        travel.KmRun,
+
+                        TravelAmount = travel.Amount,
+                        TravelRemarks = travel.Remarks,
+
+                        Breakfast = food?.Breakfast ?? 0,
+                        Lunch = food?.Lunch ?? 0,
+                        Dinner = food?.Dinner ?? 0,
+                        FoodAmount = food?.Amount ?? 0,
+
+                        TollAmount = expense?.TollAmount ?? 0,
+                        AutoAmount = expense?.AutoAmount ?? 0,
+                        OtherAmount = expense?.OtherAmount ?? 0,
+                        ExpenseRemarks = expense?.Remarks ?? "",
+
+                        Documents = documents
+                            .Where(d =>
+                                d.ReferenceId == travel.TravelId)
+                            .Select(d => new
+                            {
+                                d.DocumentId,
+                                d.ModuleType,
+                                d.DocumentType,
+                                d.FilePath,
+                                d.OriginalFileName
+                            })
+                            .ToList()
+                    });
+                }
+
+                // ===========================
+                // Response
+                // ===========================
+
+                return Ok(new
+                {
+                    success = true,
+
+                    data = new
+                    {
+                        claimId = claim.ClaimId,
+                        claimNo = claim.ClaimNo,
+                        employeeId = claim.EmployeeId,
+                        claimMonth = claim.ClaimMonth,
+                        totalAmount = claim.TotalAmount,
+                        status = claim.Status,
+
+                        documents = documents.Select(d => new
+                        {
+                            d.DocumentId,
+                            d.ReferenceId,
+                            d.ModuleType,
+                            d.DocumentType,
+                            d.FilePath,
+                            d.OriginalFileName
+                        }),
+
+                        claimEntries = claimEntries
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while fetching draft details.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+
+
+}
+
+        [HttpPut("update-draft/{claimId}")]         
+        public async Task<IActionResult> UpdateDraft(
+      int claimId,
+      [FromBody] CreateClaimDto dto)
+        {
+            await using var transaction =
+                await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == claimId &&
+                        x.Status == "Draft" &&
+                        x.IsActive == true);
+
+                if (claim == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Draft not found."
+                    });
+                }
+
+                // =====================
+                // Recalculate Total
+                // =====================
+
+                decimal totalAmount =
+                    dto.ClaimEntries.Sum(x =>
+                        x.TravelAmount +
+                        x.FoodAmount +
+                        (x.TollAmount ?? 0) +
+                        (x.AutoAmount ?? 0) +
+                        (x.OtherAmount ?? 0));
+
+                // =====================
+                // Update Claim Master
+                // =====================
+
+                claim.ClaimMonth = dto.ClaimMonth;
+                claim.TotalAmount = totalAmount;
+                claim.LastModifiedAt = DateTime.Now;
+
+                await _context.SaveChangesAsync();
+
+                // =====================
+                // Delete Old Rows
+                // =====================
+
+                var oldTravels = _context.ClaimTravels
+                    .Where(x => x.ClaimId == claimId);
+
+                _context.ClaimTravels.RemoveRange(oldTravels);
+
+                var oldFoods = _context.ClaimFoods
+                    .Where(x => x.ClaimId == claimId);
+
+                _context.ClaimFoods.RemoveRange(oldFoods);
+
+                var oldExpenses = _context.ClaimExpenses
+                    .Where(x => x.ClaimId == claimId);
+
+                _context.ClaimExpenses.RemoveRange(oldExpenses);
+
+                await _context.SaveChangesAsync();
+
+                // =====================
+                // Insert New Rows
+                // =====================
+
+                foreach (var entry in dto.ClaimEntries)
+                {
+                    var travel = new ClaimTravel
+                    {
+                        ClaimId = claimId,
+
+                        VehicleTypeId = entry.VehicleTypeId,
+                        FuelTypeId = entry.FuelTypeId,
+                        VehicleDetailId = entry.VehicleDetailId,
+                        VehicleNumber = entry.VehicleNumber,
+
+                        TravelDate = entry.TravelDate,
+                        Purpose = entry.Purpose,
+                        FromLocation = entry.FromLocation,
+                        ToLocation = entry.ToLocation,
+                        KmRun = entry.KmRun,
+                        Amount = entry.TravelAmount,
+                        Remarks = entry.TravelRemarks,
+                        DocumentPath = string.Empty
+                    };
+
+                    _context.ClaimTravels.Add(travel);
+                    await _context.SaveChangesAsync();
+
+                    var food = new ClaimFood
+                    {
+             
+                        ClaimId = claimId,
+                        FoodDate = entry.TravelDate,
+                        Breakfast = entry.Breakfast,
+                        Lunch = entry.Lunch,
+                        Dinner = entry.Dinner,
+                        Amount = entry.FoodAmount,
+                        InvoiceNumber = string.Empty,
+                        DocumentPath = string.Empty
+                    };
+
+                    _context.ClaimFoods.Add(food);
+
+                    var expense = new ClaimExpense
+                    {
+                        ClaimId = claimId,
+                        TravelId = travel.TravelId,
+
+                        TollAmount = entry.TollAmount,
+                        AutoAmount = entry.AutoAmount,
+                        OtherAmount = entry.OtherAmount,
+
+                        ExpenseDate = entry.TravelDate,
+                        Remarks = entry.ExpenseRemarks,
+
+                        DocumentPath = string.Empty,
+                        created_at = DateTime.Now,
+                        IsActive = true
+                    };
+
+                    _context.ClaimExpenses.Add(expense);
+                }
+
+                await _context.SaveChangesAsync();
+
+                await transaction.CommitAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Draft updated successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while updating draft.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+
+        [HttpPut("submit-draft/{claimId}")]
+        public async Task<IActionResult> SubmitDraft(int claimId)
+        {
+            try
+            {
+                // ==========================================
+                // Get Draft Claim
+                // ==========================================
+
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == claimId &&
+                        x.Status == "Draft" &&
+                        x.IsActive == true);
+
+                if (claim == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Draft not found."
+                    });
+                }
+
+                // ==========================================
+                // Update Status
+                // ==========================================
+
+                claim.Status = "Submitted";
+
+                claim.SubmittedAt = DateTime.Now;
+
+                claim.LastModifiedAt = DateTime.Now;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Claim submitted successfully.",
+                    data = new
+                    {
+                        claim.ClaimId,
+                        claim.ClaimNo,
+                        claim.Status,
+                        claim.SubmittedAt
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while submitting claim.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+
         //-----Dropdown api for vehicle types and fueltypes ------>
         [HttpGet("vehicle-types")]
         public async Task<IActionResult> GetVehicleTypes()
@@ -334,7 +1335,6 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
-
 
 
         // Fuel Type dropdown
@@ -366,384 +1366,132 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
-        //[HttpPost("add-travel")]
-        //public async Task<IActionResult> AddTravel(ClaimTravel travel)
-        //{
-        //    _context.ClaimTravels.Add(travel); 
-        //    await _context.SaveChangesAsync();
-
-        //    return Ok(travel);
-        //}
-
-
-        //[HttpPost("add-travel")]
-        //public async Task<IActionResult> AddTravel(ClaimTravel travel)
-        //{
-        //    try
-        //    {
-        //        travel.TravelId = 0;
-
-        //        travel.FromLocation = travel.FromLocation ?? "-";
-        //        travel.ToLocation = travel.ToLocation ?? "-";
-        //        travel.Purpose = travel.Purpose ?? "-";
-        //        travel.Remarks = travel.Remarks ?? "-";
-
-        //        _context.ClaimTravels.Add(travel);
-        //        await _context.SaveChangesAsync();
-
-        //        return Ok(travel);
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return BadRequest(new
-        //        {
-        //            message = "An error occurred while adding travel claim",
-        //            error = ex.InnerException?.Message ?? ex.Message
-        //        });
-        //    }
-        //}
-
-
-        //[HttpPost("add-food")]
-        //public async Task<IActionResult> AddFood(ClaimFood food)
-        //{
-        //    try
-        //    {
-        //        _context.ClaimFoods.Add(food);
-        //        await _context.SaveChangesAsync();
-
-        //        return Ok(food);
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return StatusCode(500, new
-        //        {
-        //            message = "An error occurred while adding food claim",
-        //            error = ex.Message
-        //        });
-        //    }
-        //}
-
-        //[HttpPost("add-expense")]
-        //public async Task<IActionResult> AddExpense(ClaimExpense expense)
-        //{
-        //    try
-        //    {
-        //        _context.ClaimExpenses.Add(expense);
-        //        await _context.SaveChangesAsync();
-
-        //        return Ok(expense);
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return StatusCode(500, new
-        //        {
-        //            message = "An error occurred while adding expense claim",    
-        //            error = ex.Message
-        //        });
-        //    }
-        //}
-
-        //[HttpPost("add-claim-entry")]
-        //public async Task<IActionResult> AddClaimEntry(CreateClaimEntryDto dto)
-        //{
-        //    await using var transaction = await _context.Database.BeginTransactionAsync();
-
-        //    try
-        //    {
-        //        // 1. Validate Claim
-        //        var claim = await _context.ClaimMasters
-        //            .FirstOrDefaultAsync(x => x.ClaimId == dto.ClaimId);
-
-        //        if (claim == null)
-        //        {
-        //            return BadRequest(new
-        //            {
-        //                message = "Invalid Claim Id"
-        //            });
-        //        }
-
-        //        // 2. Travel Entry
-        //        var travel = new ClaimTravel
-        //        {
-        //            ClaimId = dto.ClaimId,
-        //            TravelDate = dto.TravelDate,
-        //            Purpose = dto.Purpose,
-        //            FromLocation = dto.FromLocation,
-        //            ToLocation = dto.ToLocation,
-        //            KmRun = dto.KmRun,
-        //            Amount = dto.TravelAmount,
-        //            Remarks = dto.TravelRemarks
-        //        };
-
-        //        _context.ClaimTravels.Add(travel);
-        //        await _context.SaveChangesAsync(); // TravelId generated here
-
-        //        // 3. Food Entry
-        //        var food = new ClaimFood
-        //        {
-        //            ClaimId = dto.ClaimId,
-        //            FoodDate = dto.TravelDate,
-        //            Breakfast = dto.Breakfast,
-        //            Lunch = dto.Lunch,
-        //            Dinner = dto.Dinner,
-        //            Amount = dto.FoodAmount
-        //        };
-
-        //        _context.ClaimFoods.Add(food);
-        //        await _context.SaveChangesAsync();
-
-        //        // 4. Expense Helper
-        //        void AddExpense(decimal? amount, int typeId)
-        //        {
-        //            if (amount.HasValue && amount.Value > 0)
-        //            {
-        //                _context.ClaimExpenses.Add(new ClaimExpense
-        //                {
-        //                    ClaimId = dto.ClaimId,
-        //                    TravelId = travel.TravelId,
-        //                    Expense_type_id = typeId,
-        //                    ExpenseDate = dto.TravelDate,
-        //                    Amount = amount.Value,
-        //                    Remarks = dto.ExpenseRemarks,
-        //                    created_at = DateTime.Now,
-        //                    IsActive = true
-        //                });
-        //            }
-        //        }
-
-        //        // 5. Expenses
-        //        AddExpense(dto.TollAmount, 1);   // Toll
-        //        AddExpense(dto.AutoAmount, 2);   // Auto
-        //        AddExpense(dto.OtherAmount, 3);  // Others
-
-        //        await _context.SaveChangesAsync();
-
-        //        // 6. Commit Transaction
-        //        await transaction.CommitAsync();
-
-        //        return Ok(new
-        //        {
-        //            message = "Claim Entry Added Successfully",
-        //            claimId = dto.ClaimId,
-        //            travelId = travel.TravelId
-        //        });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        await transaction.RollbackAsync();
-
-        //        return StatusCode(500, new
-        //        {
-        //            message = "Error while saving claim entry",
-        //            error = ex.InnerException?.Message ?? ex.Message
-        //        });
-        //    }
-        //}
-
-        [HttpPost("upload")]
-        public async Task<IActionResult> UploadFile(IFormFile file)
+        [HttpPost("upload-document")]
+        public async Task<IActionResult> UploadDocument(
+    [FromForm] UploadDocumentDto model)
         {
             try
             {
-                if (file == null || file.Length == 0)
-                    return BadRequest("Invalid file");
+                // ==========================
+                // Validation
+                // ==========================
 
-                var folder = Path.Combine(Directory.GetCurrentDirectory(), "Uploads");
-
-                if (!Directory.Exists(folder))
-                    Directory.CreateDirectory(folder);
-
-                var filePath = Path.Combine(folder, file.FileName);
-
-                using (var stream = new FileStream(filePath, FileMode.Create))
+                if (model.File == null || model.File.Length == 0)
                 {
-                    await file.CopyToAsync(stream);
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "File is required"
+                    });
                 }
 
-                return Ok(new
-                {
-                    path = file.FileName
-                });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    message = "An error occurred while uploading file",
-                    error = ex.Message
-                });
-            }
-        }
+                // ==========================
+                // Get Claim Details
+                // ==========================
 
-
-        [HttpGet("month/{month}")]
-        public async Task<IActionResult> GetClaimsByMonth(string month)
-        {
-            try
-            {
-                var data = await _context.ClaimMasters
-                    .Where(x => x.ClaimMonth.ToString().Contains(month))
-                    .ToListAsync();
-
-                return Ok(data);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    Message = "An error occurred while fetching claims by month.",
-                    Error = ex.Message
-                });
-            }
-        }
-
-
-        [HttpGet("get-claims")]
-        public async Task<IActionResult> GetClaims(int claimId, DateTime date)
-        {
-            try
-            {
-                var claims = await _context.ClaimTravels
-                    .Where(x => x.ClaimId == claimId)
-                    .ToListAsync();
-
-                var filtered = claims
-                    .Where(x => x.TravelDate.HasValue &&
-                                x.TravelDate.Value.Date == date.Date)
-                    .ToList();
-
-                return Ok(filtered);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    Message = "An error occurred while fetching claims.",
-                    Error = ex.Message
-                });
-            }
-        }
-        [HttpGet("get-claims-by-year")]
-        public async Task<IActionResult> GetClaimsByYear(int year)
-        {
-            try
-            {
-                var data = await _context.ClaimMasters
-                    .Where(x => x.ClaimMonth.Year == year)
-                    .Select(x => new
-                    {
-                        claimId = x.ClaimId,
-                        claimMonth = x.ClaimMonth,
-                        createdAt = x.CreatedAt,
-                        totalAmount = 0,
-                        approver1 = "Pending",
-                        accountsStatus = "Pending"
-                    })
-                    .ToListAsync();
-
-                return Ok(data);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    Message = "An error occurred while fetching claims by year.",
-                    Error = ex.Message
-                });
-            }
-        }
-
-        [HttpDelete("delete-claim/{id}")]
-        public async Task<IActionResult> DeleteClaim(int id)
-        {
-            try
-            {
-                var claim = await _context.TravelClaims.FindAsync(id);
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x => x.ClaimId == model.ClaimId);
 
                 if (claim == null)
-                    return NotFound("Claim not found");
-
-                _context.TravelClaims.Remove(claim);
-                await _context.SaveChangesAsync();
-
-                return Ok("Claim deleted successfully");
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    Message = "An error occurred while deleting the claim.",
-                    Error = ex.Message
-                });
-            }
-        }
-        [HttpGet("total-expense")]
-
-        public async Task<IActionResult> GetTotalExpense(int empId, DateTime date)
-        {
-            try
-            {
-                var data = await _context.TravelClaims
-                    .Where(x => x.EmpId == empId && x.Date.Date == date.Date)
-                    .ToListAsync();
-
-                var result = new
-                {
-                    Car = data.Where(x => x.VehType == "Car").Sum(x => x.Amount),
-                    Bike = data.Where(x => x.VehType == "Bike").Sum(x => x.Amount),
-                    BusTaxi = data.Where(x => x.VehType == "Bus/Taxi").Sum(x => x.Amount),
-                    Food = data.Sum(x => x.Food),
-                    TollCharges = data.Sum(x => x.TollCharge),
-                    Auto = data.Sum(x => x.Auto),
-                    Others = data.Sum(x => x.Others),
-                    Total = data.Sum(x => x.Amount + x.Food + x.TollCharge + x.Auto + x.Others)
-                };
-
-                return Ok(result);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    Message = "An error occurred while fetching total expense.",
-                    Error = ex.Message
-                });
-            }
-        }
-
-
-        [HttpPut("submit-claim/{claimId}")]
-        public async Task<IActionResult> SubmitClaim(int claimId)
-        {
-            try
-            {
-                var claimMaster = await _context.ClaimMasters
-                    .FirstOrDefaultAsync(x => x.ClaimId == claimId);
-
-                if (claimMaster == null)
                 {
                     return NotFound(new
                     {
+                        success = false,
                         message = "Claim not found"
                     });
                 }
 
-                claimMaster.Status = "Submitted";
-                
+                // ==========================
+                // Create Claim Folder
+                // Uploads/Claims/CLM20260001
+                // ==========================
+
+                var claimNumber = claim.ClaimNo;
+
+                var folderPath = Path.Combine(
+                    Directory.GetCurrentDirectory(),
+                    "wwwroot",
+                    "Uploads",
+                    "Claims",
+                    claimNumber);
+
+                if (!Directory.Exists(folderPath))
+                {
+                    Directory.CreateDirectory(folderPath);
+                }
+
+                // ==========================
+                // Generate File Name
+                // ==========================
+
+                var extension =
+                    Path.GetExtension(model.File.FileName);
+
+                var storedFileName =
+                    $"{model.DocumentType}_{DateTime.Now.Ticks}{extension}";
+
+                // ==========================
+                // Physical Path
+                // ==========================
+
+                var physicalPath =
+                    Path.Combine(folderPath, storedFileName);
+
+                // ==========================
+                // Save File
+                // ==========================
+
+                using (var stream = new FileStream(
+                    physicalPath,
+                    FileMode.Create))
+                {
+                    await model.File.CopyToAsync(stream);
+                }
+
+                // ==========================
+                // Relative Path
+                // ==========================
+
+                var relativePath =
+                    $"Uploads/Claims/{claimNumber}/{storedFileName}";
+
+                // ==========================
+                // Save Document Entry
+                // ==========================
+
+                var document = new ClaimDocument
+                {
+                    ClaimId = model.ClaimId,
+                    ReferenceId = model.ReferenceId,
+                    ModuleType = model.ModuleType,
+                    DocumentType = model.DocumentType,
+                    OriginalFileName = model.File.FileName,
+                    StoredFileName = storedFileName,
+                    FilePath = relativePath,
+                    FileExtension = extension,
+                    UploadedDate = DateTime.Now,
+                    IsActive = true
+                };
+
+                _context.ClaimDocuments.Add(document);
 
                 await _context.SaveChangesAsync();
+
+                // ==========================
+                // Response
+                // ==========================
 
                 return Ok(new
                 {
                     success = true,
-                    message = "Claim submitted successfully"
+                    message = "Document uploaded successfully",
+                    documentId = document.DocumentId,
+                    filePath = relativePath
                 });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new
+                return BadRequest(new
                 {
                     success = false,
                     message = ex.Message
@@ -751,98 +1499,77 @@ namespace HRPortal.API.Controllers
             }
         }
 
-        [HttpGet("get-claim/{id}")]
-        public async Task<IActionResult> GetClaim(int id)
+        [HttpGet("claim-documents/{claimId}")]
+        public async Task<IActionResult> GetClaimDocuments(
+    int claimId)
         {
-            try
-            {
-                var claim = await _context.ClaimTravels
-                    .FirstOrDefaultAsync(x => x.ClaimId == id);
+            var documents = await _context.ClaimDocuments
+                .Where(x => x.ClaimId == claimId
+                         && x.IsActive)
+                .ToListAsync();
 
-                if (claim == null)
-                    return NotFound("Claim not found");
-
-                return Ok(claim);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    Message = "An error occurred while fetching the claim.",
-                    Error = ex.Message
-                });
-            }
+            return Ok(documents);
         }
 
-        [HttpGet("get-drafts")]
-        public async Task<IActionResult> GetDraftClaims()
+        [HttpDelete("document/{documentId}")]
+        public async Task<IActionResult> DeleteDocument(
+    int documentId)
         {
-            try
-            {
-                var data = await _context.DraftClaims
-                    .OrderByDescending(x => x.DraftId)
-                    .Select(x => new
-                    {
-                        x.DraftId,
-                        x.Year,
-                        x.ClaimNo,
-                        ClaimDateMonth = x.ClaimDateMonth.ToString("dd-MMMM-yyyy"),
-                        x.Amount,
-                        x.Status
-                    })
-                    .ToListAsync();
+            var document = await _context.ClaimDocuments
+                .FirstOrDefaultAsync(x =>
+                    x.DocumentId == documentId);
 
-                return Ok(data);
-            }
-            catch (Exception ex)
+            if (document == null)
             {
-                return StatusCode(500, new
-                {
-                    Message = "An error occurred while fetching draft claims.",
-                    Error = ex.Message
-                });
+                return NotFound();
             }
+
+            document.IsActive = false;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                Success = true
+            });
         }
+        //[HttpPost("add-travel")]
 
-        [HttpDelete("delete-draft/{id}")]
-        public async Task<IActionResult> DeleteDraft(int id)
-        {
-            try
-            {
-                var draft = await _context.DraftClaims.FindAsync(id);
-
-                if (draft == null)
-                    return NotFound("Draft not found");
-
-                _context.DraftClaims.Remove(draft);
-                await _context.SaveChangesAsync();
-
-                return Ok("Draft deleted successfully");
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    Message = "An error occurred while deleting the draft.",
-                    Error = ex.Message
-                });
-            }
-        }
-
-        //[HttpPost("create-local-purchase")]
-        //public async Task<IActionResult> CreateLocalPurchase(LocalPurchase purchase)
+        //[HttpPost("upload")]
+        //public async Task<IActionResult> UploadFile(IFormFile file)
         //{
-        //    var nextClaim = await _context.LocalPurchases
-        //        .Where(x => x.Year == purchase.Year)
-        //        .MaxAsync(x => (int?)x.ClaimNo) ?? 0;
+        //    try
+        //    {
+        //        if (file == null || file.Length == 0)
+        //            return BadRequest("Invalid file");
 
-        //    purchase.ClaimNo = nextClaim + 1;
+        //        var folder = Path.Combine(Directory.GetCurrentDirectory(), "Uploads");
 
-        //    _context.LocalPurchases.Add(purchase);
-        //    await _context.SaveChangesAsync();
+        //        if (!Directory.Exists(folder))
+        //            Directory.CreateDirectory(folder);
 
-        //    return Ok(purchase);
+        //        var filePath = Path.Combine(folder, file.FileName);
+
+        //        using (var stream = new FileStream(filePath, FileMode.Create))
+        //        {
+        //            await file.CopyToAsync(stream);
+        //        }
+
+        //        return Ok(new
+        //        {
+        //            path = file.FileName
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            message = "An error occurred while uploading file",
+        //            error = ex.Message
+        //        });
+        //    }
         //}
+        //--------------------------------LOcal Purchase Page--------------------//
 
         //[Authorize]
         [HttpPost("add-local-purchase")]
@@ -1390,7 +2117,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
-         [Authorize]
+        [Authorize]
         [HttpGet("spent_new")]
         public async Task<IActionResult> GetSpent()
         {

@@ -364,10 +364,11 @@ namespace HRPortal.API.Controllers
                 string role = employee.Role ?? "Employee";
 
                 var token = GenerateJwtToken(
-                    employee.EmailId,
-                    role,
-                    employee.OrganizationId
-                );
+    employee.EmailId,
+    role,
+    employee.OrganizationId,
+    employee.EmpId
+);
 
                 bool isOrganizationSetupRequired =
                     employee.OrganizationId == null;
@@ -430,12 +431,13 @@ namespace HRPortal.API.Controllers
 
 
 
-        private string GenerateJwtToken(string email, string role, int? organizationId)
+        private string GenerateJwtToken(string email, string role, int? organizationId,int? EmpId)
         {
             var claimsList = new List<Claim>
     {
-        new Claim(ClaimTypes.Email, email),
-        new Claim(ClaimTypes.Role, role)
+          new Claim(ClaimTypes.Email, email),
+          new Claim(ClaimTypes.Role, role),
+          new Claim("EmpId", EmpId.ToString())
     };
 
             if (organizationId.HasValue)

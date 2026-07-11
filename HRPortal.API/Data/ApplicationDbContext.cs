@@ -47,6 +47,8 @@ namespace HRPortal.API.Data
         //-----------------------------Travles -----------------------------
         
         public DbSet<VehicleMaster> VehicleMaster { get; set; }
+
+        public DbSet<VehicleRateMaster> VehicleRateMasters { get; set; }
         public DbSet<FuelTypeMaster> FuelTypeMasters { get; set; }
         public DbSet<Vehicle> Vehicles { get; set; }
         public DbSet<Purpose> Purposes { get; set; }
@@ -54,7 +56,7 @@ namespace HRPortal.API.Data
         public DbSet<ClaimTravel> ClaimTravels { get; set; }
         public DbSet<ClaimFood> ClaimFoods { get; set; }
         public DbSet<ClaimExpense> ClaimExpenses { get; set; }
-        public DbSet<TravelClaim> TravelClaims { get; set; }
+        public DbSet<ClaimDocument> ClaimDocuments { get; set; }
         public DbSet<DraftClaimView> DraftClaims { get; set; }
         public DbSet<LocalPurchase> LocalPurchases { get; set; }
 

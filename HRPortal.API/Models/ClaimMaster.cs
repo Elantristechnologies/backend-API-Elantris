@@ -17,17 +17,6 @@ namespace HRPortal.API.Models
         public DateTime ClaimMonth { get; set; } //1234
 
 
-        [Column("vehicle_number")]
-        public string VehicleNumber { get; set; }
-
-        [Column("vehicle_type_id")]
-        public int? VehicleTypeId { get; set; }
-
-        [Column("fuel_type_id")]
-        public int? FuelTypeId { get; set; }
-
-        [Column("vehicle_detail_id")]
-        public int? VehicleDetailId { get; set; }
 
         [Column("created_at")]
         public DateTime CreatedAt { get; set; } = DateTime.Now;
@@ -45,6 +34,18 @@ namespace HRPortal.API.Models
         public string? Status { get; set; }
 
         [Column("is_active")]
-        public bool? IsActive { get; set; }
+        public bool IsActive { get; set; }
+
+        [Column("submitted_at")]
+        public DateTime? SubmittedAt { get; set; }
+
+        [Column("approved_at")]
+        public DateTime? ApprovedAt { get; set; }
+
+        [Column("rejected_at")]
+        public DateTime? RejectedAt { get; set; }
+
+        [Column("last_modified_at")]
+        public DateTime? LastModifiedAt { get; set; }
     }
 }

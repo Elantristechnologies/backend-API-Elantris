@@ -10,34 +10,44 @@ namespace HRPortal.API.Models
         [Column("travel_id")]
         public int TravelId { get; set; }
 
-        [Column("emp_id")]
-        public int EmpId { get; set; }
-
         [Column("claim_id")]
         public int ClaimId { get; set; }
+        [Column("vehicle_number")]
+        public string VehicleNumber { get; set; }
 
+        [Column("vehicle_type_id")]
+        public int? VehicleTypeId { get; set; }
+
+        [Column("fuel_type_id")]
+        public int? FuelTypeId { get; set; }
+
+        [Column("vehicle_detail_id")]
+        public int? VehicleDetailId { get; set; }
         [Column("travel_date")]
         public DateTime? TravelDate { get; set; } //hello commit
 
         [Column("purpose")]
-        public string Purpose { get; set; }
+        public string? Purpose { get; set; }
 
         [Column("from_location")]
-        public string FromLocation { get; set; }
+        public string? FromLocation { get; set; }
 
         [Column("to_location")]
-        public string ToLocation { get; set; }
+        public string? ToLocation { get; set; }
 
         [Column("km_run")]
-        public int KmRun { get; set; }
+        public int? KmRun { get; set; }
 
         [Column("amount")]
-        public decimal Amount { get; set; }
+        public decimal? Amount { get; set; }
 
         [Column("remarks")]
-        public string Remarks { get; set; }
+        public string? Remarks { get; set; }
 
         [Column("document_path")]
-        public string DocumentPath { get; set; }
+        public string? DocumentPath { get; set; }
+
+        [Column("is_active")]
+        public bool? IsActive { get; set; } = true;
     }
 }

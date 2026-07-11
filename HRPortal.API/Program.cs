@@ -53,8 +53,10 @@ builder.Services.AddCors(options =>
               .AllowAnyMethod();
     });
 });
+//----for Distonse api ---//
 
- 
+builder.Services.AddHttpClient();
+
 
 
 

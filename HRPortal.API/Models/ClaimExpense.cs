@@ -28,10 +28,10 @@ namespace HRPortal.API.Models
         public DateTime ExpenseDate { get; set; }
 
         [Column("remarks")]
-        public string Remarks { get; set; }
+        public string? Remarks { get; set; }
 
         [Column("document_path")]
-        public string DocumentPath { get; set; }
+        public string? DocumentPath { get; set; }
         [Column("created_at")]
         public DateTime created_at { get; set; }
         [Column("is_active")]
