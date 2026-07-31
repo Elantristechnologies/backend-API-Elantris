@@ -29,8 +29,14 @@ namespace HRPortal.API.Models
         [Column("dinner")]
         public decimal? Dinner { get; set; }
 
-        [Column("invoice_number")]
-        public string? InvoiceNumber { get; set; }
+        [Column("breakfast_invoice")]
+        public string? BreakfastInvoiceNumber { get; set; }
+
+        [Column("lunch_invoice")]
+        public string? LunchInvoiceNumber { get; set; }
+
+        [Column("dinner_invoice")]
+        public string? DinnerInvoiceNumber { get; set; }
 
         [Column("amount")]
         public decimal? Amount { get; set; }

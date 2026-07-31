@@ -44,10 +44,17 @@ namespace HRPortal.API.Models
         [Column("remarks")]
         public string? Remarks { get; set; }
 
-        [Column("document_path")]
-        public string? DocumentPath { get; set; }
 
         [Column("is_active")]
-        public bool? IsActive { get; set; } = true;
+        public bool IsActive { get; set; } = true;
+
+        [Column("applied_rate_per_km")]
+        public decimal? AppliedRatePerKm { get; set; }
+
+        [Column("taxi_invoice_number")]
+        public string? TaxiInvoiceNumber { get; set; }
+
+        [Column("bus_train_invoice_number")]
+        public string? BusorTrainInvoiceNumber { get; set; }
     }
 }

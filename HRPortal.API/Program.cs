@@ -1,11 +1,13 @@
 using HRPortal.API.Data;
+using HRPortal.API.Models;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.SqlServer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using System.Text;
-using Microsoft.AspNetCore.Authorization;
+using static HRPortal.API.Controllers.TravelMasterController;
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseWebRoot("wwwroot");
 
@@ -66,6 +68,13 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
         builder.Configuration.GetConnectionString("DefaultConnection")
     )
 );
+
+//----------Email setUp----//
+
+builder.Services.Configure<EmailSettings>(
+    builder.Configuration.GetSection("EmailSettings"));
+
+builder.Services.AddScoped<EmailService>();
 
 // Swagger
 builder.Services.AddEndpointsApiExplorer();

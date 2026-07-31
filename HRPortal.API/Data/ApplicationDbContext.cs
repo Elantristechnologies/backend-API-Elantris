@@ -53,6 +53,10 @@ namespace HRPortal.API.Data
         public DbSet<Vehicle> Vehicles { get; set; }
         public DbSet<Purpose> Purposes { get; set; }
         public DbSet<ClaimMaster> ClaimMasters { get; set; }
+
+        public DbSet<ClaimApproval> ClaimApprovals { get; set; }
+
+        public DbSet<ApprovalMatrix> ApprovalMatrix { get; set; }
         public DbSet<ClaimTravel> ClaimTravels { get; set; }
         public DbSet<ClaimFood> ClaimFoods { get; set; }
         public DbSet<ClaimExpense> ClaimExpenses { get; set; }
@@ -162,9 +166,7 @@ namespace HRPortal.API.Data
             modelBuilder.Entity<CompanyexpenseAccesses>().HasNoKey();
 
 
-            //----Travel Portal----->
-
-            modelBuilder.Entity<ClaimListDto>().HasNoKey();
+            
         }
     }
 }

@@ -30,8 +30,7 @@ namespace HRPortal.API.Models
         [Column("remarks")]
         public string? Remarks { get; set; }
 
-        [Column("document_path")]
-        public string? DocumentPath { get; set; }
+        
         [Column("created_at")]
         public DateTime created_at { get; set; }
         [Column("is_active")]

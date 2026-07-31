@@ -16,6 +16,8 @@ namespace HRPortal.API.Models
         [Column("claim_month")]
         public DateTime ClaimMonth { get; set; } //1234
 
+        [Column("remarks")]
+        public string? Remarks { get; set; }
 
 
         [Column("created_at")]
@@ -47,5 +49,10 @@ namespace HRPortal.API.Models
 
         [Column("last_modified_at")]
         public DateTime? LastModifiedAt { get; set; }
+
+        [Column("current_approval_level")]
+        public int? CurrentApprovalLevel { get; set; }
+
+        
     }
 }

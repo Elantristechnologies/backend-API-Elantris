@@ -1,4 +1,6 @@
-﻿namespace HRPortal.API.DTOs
+﻿using System.ComponentModel.DataAnnotations.Schema;
+
+namespace HRPortal.API.DTOs
 {
     public class CreateClaimEntryDto
     {
@@ -11,7 +13,11 @@
 
         public string VehicleNumber { get; set; }
 
+        [Column("remarks")]
+        public string? Remarks { get; set; }
+
         // Travel
+        public int? TravelId { get; set; }
         public DateTime TravelDate { get; set; }
 
         public string Purpose { get; set; }
@@ -19,6 +25,9 @@
         public string FromLocation { get; set; }
 
         public string ToLocation { get; set; }
+
+        public string? BusorTrainInvoiceNumber { get; set; }
+        public string? TaxiInvoiceNumber { get; set; }
 
         public int KmRun { get; set; }
 
@@ -34,6 +43,12 @@
         public decimal Dinner { get; set; }
 
         public decimal FoodAmount { get; set; }
+
+        public string? BreakfastInvoiceNumber { get; set; }
+
+        public string? LunchInvoiceNumber { get; set; }
+
+        public string? DinnerInvoiceNumber { get; set; }
 
         // Expense
         public decimal? TollAmount { get; set; }

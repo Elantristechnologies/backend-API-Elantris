@@ -1,5 +1,4 @@
-﻿
-using ClosedXML.Excel;
+﻿using ClosedXML.Excel;
 using DocumentFormat.OpenXml.InkML;
 using HRPortal.API.Data;
 using HRPortal.API.DTOs;
@@ -17,7 +16,16 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json;
 using static System.Runtime.InteropServices.JavaScript.JSType;
+using MailKit.Net.Smtp;
+using MailKit.Security;
+using MimeKit;
+using Microsoft.Extensions.Options;
+
+
+
+
 namespace HRPortal.API.Controllers
+
 {
     [Route("api/[controller]")]
     [ApiController]
@@ -27,15 +35,17 @@ namespace HRPortal.API.Controllers
         private readonly IWebHostEnvironment _environment;
         private readonly IConfiguration _configuration;
         private readonly HttpClient _httpClient;
+        private readonly EmailService _emailService;
 
 
 
-        public TravelMasterController(ApplicationDbContext context, IWebHostEnvironment environment, IConfiguration configuration, HttpClient httpClient)
+        public TravelMasterController(ApplicationDbContext context, IWebHostEnvironment environment, IConfiguration configuration, HttpClient httpClient, EmailService emailService)
         {
             _context = context;
             _environment = environment;
             _configuration = configuration;
             _httpClient = httpClient;
+            _emailService = emailService;
         }
         [HttpPost("save")]
         public async Task<IActionResult> SaveVehicle([FromBody] Vehicle vehicle)
@@ -91,12 +101,9 @@ namespace HRPortal.API.Controllers
         {
             try
             {
-                //=========================================
-                // Get Employee Id From JWT Token
-                //=========================================
-
+                // Get Employee Id from JWT Token
                 var empIdClaim = User.FindFirst("EmpId")?.Value;
-                 
+
                 if (string.IsNullOrEmpty(empIdClaim))
                 {
                     return Unauthorized(new
@@ -108,36 +115,96 @@ namespace HRPortal.API.Controllers
 
                 int employeeId = Convert.ToInt32(empIdClaim);
 
-                //=========================================
-                // Get Employee Vehicles
-                //=========================================
-
+                // Get Active Vehicles
                 var vehicles = await _context.Vehicles
                     .Where(v => v.EmployeeId == employeeId && v.IsActive)
                     .Select(v => new
                     {
                         v.VehicleId,
-                        v.VehicleNumber,
                         v.VehicleType,
-                        v.FuelType
+                        v.VehicleNumber,
+                        v.GearType,
+                        v.FuelType,
+                        v.CCRange
                     })
                     .ToListAsync();
-
-                if (!vehicles.Any())
-                {
-                    return Ok(new
-                    {
-                        success = true,
-                        message = "No vehicles found.",
-                        data = new List<object>()
-                    });
-                }
 
                 return Ok(new
                 {
                     success = true,
-                    message = "Vehicles fetched successfully.",
+                    message = vehicles.Any()
+                        ? "Vehicles fetched successfully."
+                        : "No vehicles found.",
                     data = vehicles
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new
+                {
+                    success = false,
+                    message = "An error occurred while fetching vehicles.",
+                    error = ex.Message
+                });
+            }
+        }
+
+
+        [HttpPut("update/{vehicleId}")]
+        public async Task<IActionResult> UpdateVehicle(int vehicleId, [FromBody] Vehicle model)
+        {
+            try
+            {
+                if (model == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Invalid request."
+                    });
+                }
+
+                var vehicle = await _context.Vehicles
+                    .FirstOrDefaultAsync(x => x.VehicleId == vehicleId && x.IsActive);
+
+                if (vehicle == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Vehicle not found."
+                    });
+                }
+
+                // Duplicate check
+                var duplicate = await _context.Vehicles.AnyAsync(v =>
+                    v.VehicleId != vehicleId &&
+                    v.EmployeeId == model.EmployeeId &&
+                    v.VehicleType == model.VehicleType &&
+                    v.IsActive);
+
+                if (duplicate)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = $"Employee already has a {model.VehicleType}."
+                    });
+                }
+
+                vehicle.VehicleType = model.VehicleType;
+                vehicle.VehicleNumber = model.VehicleNumber;
+                vehicle.GearType = model.GearType;
+                vehicle.FuelType = model.FuelType;
+                vehicle.CCRange = model.CCRange;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Vehicle updated successfully.",
+                    data = vehicle
                 });
             }
             catch (Exception ex)
@@ -150,6 +217,42 @@ namespace HRPortal.API.Controllers
             }
         }
 
+       [HttpDelete("soft-delete/{vehicleId}")]
+public async Task<IActionResult> DeleteVehicle(int vehicleId)
+{
+    try
+    {
+        var vehicle = await _context.Vehicles
+            .FirstOrDefaultAsync(x => x.VehicleId == vehicleId && x.IsActive);
+
+        if (vehicle == null)
+        {
+            return NotFound(new
+            {
+                success = false,
+                message = "Vehicle not found."
+            });
+        }
+
+        vehicle.IsActive = false;
+
+        await _context.SaveChangesAsync();
+
+        return Ok(new
+        {
+            success = true,
+            message = "Vehicle deleted successfully."
+        });
+    }
+    catch (Exception ex)
+    {
+        return StatusCode(500, new
+        {
+            success = false,
+            message = ex.Message
+        });
+    }
+}
 
         //-----------Travel form FROm ANd To localtion and calculate distonse//------//
 
@@ -258,20 +361,38 @@ namespace HRPortal.API.Controllers
         {
             try
             {
-                var empIdClaim = User.FindFirst("EmpId");
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
 
-                if (empIdClaim == null)
-                {
+                if (string.IsNullOrEmpty(empIdClaim))
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "Employee Id not found in token."
+                        message = "Employee not found in token."
+                    });
+
+                int empId = Convert.ToInt32(empIdClaim);
+
+                var employee = await _context.EmployeeMasters
+                    .FirstOrDefaultAsync(x => x.EmpId == empId);
+
+                if (employee == null)
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Employee not found."
+                    });
+
+                // Director = 1, Manager = 2
+                if (employee.DesignationId != 1 && employee.DesignationId != 2)
+                {
+                    return StatusCode(403, new
+                    {
+                        success = false,
+                        message = "You don't have permission."
                     });
                 }
 
-                int empId = Convert.ToInt32(empIdClaim.Value);
-
-                var exists = await _context.VehicleRateMasters.AnyAsync(x =>
+                bool exists = await _context.VehicleRateMasters.AnyAsync(x =>
                     x.VehicleTypeId == dto.VehicleTypeId &&
                     x.FuelTypeId == dto.FuelTypeId &&
                     x.ValidFrom.Date == dto.ValidFrom.Date &&
@@ -282,11 +403,11 @@ namespace HRPortal.API.Controllers
                     return BadRequest(new
                     {
                         success = false,
-                        message = "Vehicle rate already exists."
+                        message = "Vehicle Rate already exists."
                     });
                 }
 
-                var vehicleRate = new VehicleRateMaster
+                var rate = new VehicleRateMaster
                 {
                     VehicleTypeId = dto.VehicleTypeId,
                     FuelTypeId = dto.FuelTypeId,
@@ -294,17 +415,17 @@ namespace HRPortal.API.Controllers
                     AmountPerKm = dto.AmountPerKm,
                     ValidFrom = dto.ValidFrom,
                     CreatedBy = empId,
-                    IsActive = true,
-                    CreatedDate = DateTime.Now
+                    CreatedDate = DateTime.Now,
+                    IsActive = true
                 };
 
-                _context.VehicleRateMasters.Add(vehicleRate);
+                _context.VehicleRateMasters.Add(rate);
                 await _context.SaveChangesAsync();
 
                 return Ok(new
                 {
                     success = true,
-                    message = "Vehicle rate added successfully."
+                    message = "Vehicle Rate added successfully."
                 });
             }
             catch (Exception ex)
@@ -322,28 +443,28 @@ namespace HRPortal.API.Controllers
         {
             try
             {
-                
-                var data = await (
-                    from vr in _context.VehicleRateMasters
-                    join v in _context.VehicleMaster
-                        on vr.VehicleTypeId equals v.VehicleId
-                    join f in _context.FuelTypeMasters
-                        on vr.FuelTypeId equals f.FuelTypeId
-                    where vr.IsActive
-                    select new
-                    {
-                        vr.VehicleRateId,
-                        vr.VehicleTypeId,
-                        VehicleName = v.VehicleName,
+                var data =
+                    await (
+                        from vr in _context.VehicleRateMasters
+                        join vt in _context.VehicleMaster
+                            on vr.VehicleTypeId equals vt.VehicleId
+                        join ft in _context.FuelTypeMasters
+                            on vr.FuelTypeId equals ft.FuelTypeId
+                        where vr.IsActive
+                        orderby vt.VehicleName
+                        select new
+                        {
+                            vr.VehicleRateId,
+                            vr.VehicleTypeId,
+                            VehicleType = vt.VehicleName,
 
-                        vr.FuelTypeId,
-                        FuelName = f.FuelTypeName,
+                            vr.FuelTypeId,
+                            FuelType = ft.FuelTypeName,
 
-                        vr.AmountPerLiter,
-                        vr.AmountPerKm,
-                        vr.ValidFrom,
-                        vr.IsActive
-                    }).ToListAsync();
+                            vr.AmountPerLiter,
+                            vr.AmountPerKm,
+                            vr.ValidFrom
+                        }).ToListAsync();
 
                 return Ok(new
                 {
@@ -361,12 +482,101 @@ namespace HRPortal.API.Controllers
             }
         }
 
+        [HttpGet("VehicleRate")]
+        public async Task<IActionResult> GetVehicleRate(
+    int vehicleTypeId,
+    int fuelTypeId)
+        {
+            try
+            {
+                var rate = await (
+                    from vr in _context.VehicleRateMasters
+                    join v in _context.VehicleMaster
+                        on vr.VehicleTypeId equals v.VehicleId
+                    join f in _context.FuelTypeMasters
+                        on vr.FuelTypeId equals f.FuelTypeId
+                    where vr.IsActive
+                          && vr.VehicleTypeId == vehicleTypeId
+                          && vr.FuelTypeId == fuelTypeId
+                    select new
+                    {
+                        vr.VehicleRateId,
+                        vr.VehicleTypeId,
+                        VehicleType = v.VehicleName,
+
+                        vr.FuelTypeId,
+                        FuelType = f.FuelTypeName,
+
+                        vr.AmountPerLiter,
+                        vr.AmountPerKm,
+                        vr.ValidFrom
+                    }).FirstOrDefaultAsync();
+
+                if (rate == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Rate not configured."
+                    });
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    data = rate
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+        }
 
         [HttpPut("VehicleRateMasters/{id}")]
         public async Task<IActionResult> UpdateVehicleRate(int id, [FromBody] VehicleRateDto dto)
         {
             try
             {
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
+
+                if (string.IsNullOrEmpty(empIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Employee not found in token."
+                    });
+                }
+
+                int empId = Convert.ToInt32(empIdClaim);
+
+                var employee = await _context.EmployeeMasters
+                    .FirstOrDefaultAsync(x => x.EmpId == empId);
+
+                if (employee == null)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Employee not found."
+                    });
+                }
+
+                // Only Director & Manager
+                if (employee.DesignationId != 1 && employee.DesignationId != 2)
+                {
+                    return StatusCode(403, new
+                    {
+                        success = false,
+                        message = "You don't have permission."
+                    });
+                }
+
                 var vehicleRate = await _context.VehicleRateMasters
                     .FirstOrDefaultAsync(x => x.VehicleRateId == id && x.IsActive);
 
@@ -376,6 +586,23 @@ namespace HRPortal.API.Controllers
                     {
                         success = false,
                         message = "Vehicle Rate not found."
+                    });
+                }
+
+                // Duplicate Check
+                bool exists = await _context.VehicleRateMasters.AnyAsync(x =>
+                    x.VehicleRateId != id &&
+                    x.VehicleTypeId == dto.VehicleTypeId &&
+                    x.FuelTypeId == dto.FuelTypeId &&
+                    x.ValidFrom.Date == dto.ValidFrom.Date &&
+                    x.IsActive);
+
+                if (exists)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Vehicle Rate already exists."
                     });
                 }
 
@@ -403,12 +630,46 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
         [HttpDelete("VehicleRateMasters/{id}")]
         public async Task<IActionResult> DeleteVehicleRate(int id)
         {
             try
             {
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
+
+                if (string.IsNullOrEmpty(empIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Employee not found in token."
+                    });
+                }
+
+                int empId = Convert.ToInt32(empIdClaim);
+
+                var employee = await _context.EmployeeMasters
+                    .FirstOrDefaultAsync(x => x.EmpId == empId);
+
+                if (employee == null)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Employee not found."
+                    });
+                }
+
+                // Only Director & Manager
+                if (employee.DesignationId != 1 && employee.DesignationId != 2)
+                {
+                    return StatusCode(403, new
+                    {
+                        success = false,
+                        message = "You don't have permission."
+                    });
+                }
+
                 var vehicleRate = await _context.VehicleRateMasters
                     .FirstOrDefaultAsync(x => x.VehicleRateId == id && x.IsActive);
 
@@ -421,6 +682,7 @@ namespace HRPortal.API.Controllers
                     });
                 }
 
+                // Soft Delete
                 vehicleRate.IsActive = false;
 
                 await _context.SaveChangesAsync();
@@ -512,103 +774,49 @@ namespace HRPortal.API.Controllers
 
 
 
-        //[HttpPost("create-complete-claim")]
-        //public async Task<IActionResult> CreateCompleteClaim(CreateClaimEntryDto dto)
-        //{
-        //    await using var transaction = await _context.Database.BeginTransactionAsync();
 
-        //    try
-        //    {
-        //        // 1. Create Claim
-        //        var claim = new ClaimMaster
-        //        {
-        //            EmployeeId = dto.EmployeeId,
-        //            ClaimMonth = dto.ClaimMonth,
-        //            VehicleTypeId = dto.VehicleTypeId,
-        //            FuelTypeId = dto.FuelTypeId,
-        //            VehicleNumber = dto.VehicleNumber,
-        //            CreatedAt = DateTime.Now,
-        //            IsActive = true
-        //        };
+        [HttpGet("next-claim-number")]
+        public async Task<IActionResult> GetNextClaimNumber()
+        {
+            try
+            {
+                var lastClaim = await _context.ClaimMasters
+                    .OrderByDescending(x => x.ClaimId)
+                    .FirstOrDefaultAsync();
 
-        //        _context.ClaimMasters.Add(claim);
-        //        await _context.SaveChangesAsync();
+                int nextNumber = (lastClaim?.ClaimId ?? 0) + 1;
 
-        //        // Generate Claim Number
-        //        claim.ClaimNo = $"CLM-{DateTime.Now.Year}-{claim.ClaimId:D4}";
-        //        claim.ClaimYear = DateTime.Now.Year;
-        //        claim.Status = "Pending";
+                var today = DateTime.Now;
 
-        //        await _context.SaveChangesAsync();
+                string financialYear;
 
-        //        // 2. Create Travel
-        //        var travel = new ClaimTravel
-        //        {
-        //            ClaimId = claim.ClaimId,
-        //            TravelDate = dto.TravelDate,
-        //            Purpose = dto.Purpose,
-        //            FromLocation = dto.FromLocation,
-        //            ToLocation = dto.ToLocation,
-        //            KmRun = dto.KmRun,
-        //            Amount = dto.TravelAmount,
-        //            Remarks = dto.TravelRemarks
-        //        };
+                if (today.Month >= 4)
+                {
+                    financialYear = $"{today.Year}/{today.Year + 1}";
+                }
+                else
+                {
+                    financialYear = $"{today.Year - 1}/{today.Year}";
+                }
 
-        //        _context.ClaimTravels.Add(travel);
-        //        await _context.SaveChangesAsync();
+                var claimNumber = $"LEC-{nextNumber:D4}-{financialYear}";
 
-        //        // 3. Create Food
-        //        var food = new ClaimFood
-        //        {
-        //            ClaimId = claim.ClaimId,
-        //            FoodDate = dto.TravelDate,
-        //            Breakfast = dto.Breakfast,
-        //            Lunch = dto.Lunch,
-        //            Dinner = dto.Dinner,
-        //            Amount = dto.FoodAmount
-        //        };
-
-        //        _context.ClaimFoods.Add(food);
-
-        //        // 4. Create Expense (Single Row)
-        //        var expense = new ClaimExpense
-        //        {
-        //            ClaimId = claim.ClaimId,
-        //            TravelId = travel.TravelId,
-        //            TollAmount = dto.TollAmount,
-        //            AutoAmount = dto.AutoAmount,
-        //            OtherAmount = dto.OtherAmount,
-        //            ExpenseDate = dto.TravelDate,
-        //            Remarks = dto.ExpenseRemarks,
-        //            IsActive = true,
-        //            created_at = DateTime.Now
-        //        };
-
-        //        _context.ClaimExpenses.Add(expense);
-
-        //        await _context.SaveChangesAsync();
-
-        //        await transaction.CommitAsync();
-
-        //        return Ok(new
-        //        {
-        //            message = "Claim Created Successfully",
-        //            claimId = claim.ClaimId,
-        //            claimNo = claim.ClaimNo,
-        //            travelId = travel.TravelId
-        //        });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        await transaction.RollbackAsync();
-
-        //        return StatusCode(500, new
-        //        {
-        //            message = "Error while creating claim",
-        //            error = ex.InnerException?.Message ?? ex.Message
-        //        });
-        //    }
-        //}
+                return Ok(new
+                {
+                    success = true,
+                    claimNumber = claimNumber
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while generating claim number.",
+                    error = ex.Message
+                });
+            }
+        }
 
         [HttpPost("create-claim")]
         public async Task<IActionResult> CreateClaim(
@@ -670,15 +878,252 @@ namespace HRPortal.API.Controllers
                     LastModifiedAt = DateTime.Now,
                     TotalAmount = totalAmount,
                     IsActive = true,
-                    Status = isSubmit ? "Submitted" : "Draft",
-                    SubmittedAt = isSubmit ? DateTime.Now : null
+                    Status = isSubmit ? "Pending" : "Draft",
+                    SubmittedAt = isSubmit ? DateTime.Now : null,
+                    CurrentApprovalLevel = isSubmit ? 1 : null,
+                    Remarks = dto.ClaimEntries.FirstOrDefault()?.Remarks
                 };
 
                 _context.ClaimMasters.Add(claim);
+
                 await _context.SaveChangesAsync();
 
-                claim.ClaimNo = $"CLM-{DateTime.Now.Year}-{claim.ClaimId:D4}";
+    //---------for claim number genrate ---//
+
+                var lastClaim = await _context.ClaimMasters
+    .Where(x => !string.IsNullOrEmpty(x.ClaimNo))
+    .OrderByDescending(x => x.ClaimId)
+    .FirstOrDefaultAsync();
+
+                int nextNumber = 1;
+
+                if (lastClaim != null)
+                {
+                    var parts = lastClaim.ClaimNo.Split('-');
+
+                    if (parts.Length >= 2 &&
+                        int.TryParse(parts[1], out int lastNumber))
+                    {
+                        nextNumber = lastNumber + 1;
+                    }
+                }
+
+                var today = DateTime.Now;
+
+                string financialYear;
+
+                if (today.Month >= 4)
+                {
+                    financialYear = $"{today.Year}/{today.Year + 1}";
+                }
+                else
+                {
+                    financialYear = $"{today.Year - 1}/{today.Year}";
+                }
+
+                claim.ClaimNo = $"LEC-{claim.ClaimId:D4}-{financialYear}";
+
                 await _context.SaveChangesAsync();
+
+
+                if (isSubmit)
+                {
+                    var employee = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(x => x.EmpId == dto.EmployeeId);
+
+                    if (employee == null)
+                    {
+                        throw new Exception("Employee not found.");
+                    }
+
+                    // ==========================
+                    // Level 1 - Reporting Manager
+                    // ==========================
+
+                    if (employee.ReportingManagerId.HasValue)
+                    {
+                        _context.ClaimApprovals.Add(new ClaimApproval
+                        {
+                            ClaimId = claim.ClaimId,
+                            ApprovalLevel = 1,
+                            ApproverEmpId = employee.ReportingManagerId.Value,
+                            Status = "Pending",
+                            CreatedAt = DateTime.Now,
+                            ApprovalToken = Guid.NewGuid()
+                        });
+                    }
+
+                    // ==========================
+                    // Level 2 - Manager's Manager
+                    // ==========================
+
+                    if (employee.ReportingManagerId.HasValue)
+                    {
+                        var manager = await _context.EmployeeMasters
+                            .FirstOrDefaultAsync(x => x.EmpId == employee.ReportingManagerId.Value);
+
+                        if (manager != null &&
+                            manager.ReportingManagerId.HasValue &&
+                            manager.ReportingManagerId.Value > 0)
+                        {
+                            _context.ClaimApprovals.Add(new ClaimApproval
+                            {
+                                ClaimId = claim.ClaimId,
+                                ApprovalLevel = 2,
+                                ApproverEmpId = manager.ReportingManagerId.Value,
+                                Status = "Pending",
+                                CreatedAt = DateTime.Now,
+                                ApprovalToken = Guid.NewGuid()
+                            });
+                        }
+                    }
+
+                    // ==========================
+                    // HR1 / HR2 / Accounts
+                    // ==========================
+
+                    var approvalMatrix = await _context.ApprovalMatrix
+                        .Where(x =>
+                            x.OrganizationId == employee.OrganizationId &&
+                            x.IsActive)
+                        .OrderBy(x => x.ApprovalLevel)
+                        .ToListAsync();
+
+                    foreach (var item in approvalMatrix)
+                    {
+                        var approver = await _context.EmployeeMasters
+                            .FirstOrDefaultAsync(x =>
+                                x.OrganizationId == employee.OrganizationId &&
+                                x.DesignationId == item.DesignationId);
+
+                        _context.ClaimApprovals.Add(new ClaimApproval
+                        {
+                            ClaimId = claim.ClaimId,
+                            ApprovalLevel = item.ApprovalLevel,
+                            ApproverEmpId = approver?.EmpId,   // Employee illana NULL save aagum
+                            Status = "Pending",
+                            CreatedAt = DateTime.Now,
+                            ApprovalToken = Guid.NewGuid()
+                        });
+                    }
+
+                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync();
+
+                    // =====================================
+                    // Send Mail To First Approver
+                    // =====================================
+
+                    var firstApproval = await _context.ClaimApprovals
+                        .Where(x => x.ClaimId == claim.ClaimId)
+                        .OrderBy(x => x.ApprovalLevel)
+                        .FirstOrDefaultAsync();
+
+                    if (firstApproval != null)
+                    {
+                        var approver = await _context.EmployeeMasters
+                            .FirstOrDefaultAsync(x => x.EmpId == firstApproval.ApproverEmpId);
+
+                        if (approver != null &&
+                            !string.IsNullOrWhiteSpace(approver.EmailId))
+                        {
+
+                            string departmentName = "-";
+
+                            if (employee.DepartmentId.HasValue)
+                            {
+                                var department = await _context.Department_Master
+                                    .FirstOrDefaultAsync(x => x.DepartmentId == employee.DepartmentId.Value);
+
+                                if (department != null)
+                                {
+                                    departmentName = department.DepartmentName;
+                                }
+                            }
+
+                            string purpose = dto.ClaimEntries
+                                .FirstOrDefault()?.Purpose ?? "-";
+
+
+                            var baseUrl = _configuration["AppSettings:BaseUrl"];
+
+                            var approveUrl =
+                                             $"{baseUrl}/api/TravelMaster/mail-approve?token={firstApproval.ApprovalToken}";
+
+                            var rejectUrl =
+                                             $"{baseUrl}/api/TravelMaster/reject-form?token={firstApproval.ApprovalToken}";
+
+                            string body = $@"
+
+Dear {approver.FullName},
+
+<br/><br/>
+
+A new Local expense claim requires your approval.
+
+<br/><br/>
+
+<b>Employee Details</b>
+
+<ul>
+    <li>Employee Name : {employee.FullName}</li>
+    <li>Employee ID : {employee.EmployeeCode}</li>
+    <li>Department : {departmentName}</li>
+</ul>
+
+<b>Claim Details</b>
+
+<ul>
+    <li>Claim Number : {claim.ClaimNo}</li>
+    <li>Claim Type : Local Expense Claim</li>
+    <li>Claim Month : {claim.ClaimMonth:MMM-yyyy}</li>
+    <li>Amount : ₹{claim.TotalAmount:N2}</li>
+    <li>Status : Pending Approval</li>
+</ul>
+
+<b>Purpose</b>
+
+<p>{purpose}</p>
+
+<br/>
+
+<a href='{approveUrl}'
+style='background:green;
+color:white;
+padding:10px 20px;
+text-decoration:none;
+border-radius:5px;'>
+
+Approve
+
+</a>
+
+&nbsp;&nbsp;
+
+<a href='{rejectUrl}'
+style='background:red;
+color:white;
+padding:10px 20px;
+text-decoration:none;
+border-radius:5px;'>
+
+Reject
+
+</a>
+
+<br/><br/>
+
+Regards,<br/>
+Local Expense Claim Portal
+";
+
+                            await _emailService.SendEmailAsync(
+                                approver.EmailId,
+                                $"Claim Approval Required - {claim.ClaimNo}",
+                                body);
+                        }
+                    }
+                }
 
                 // ===========================
                 // Save All Entries
@@ -686,6 +1131,31 @@ namespace HRPortal.API.Controllers
 
                 foreach (var entry in dto.ClaimEntries)
                 {
+                    // ===========================
+                    // Get Current Vehicle Rate
+                    // ===========================
+
+                    var currentRate = await _context.VehicleRateMasters
+                        .Where(x =>
+                            x.VehicleTypeId == entry.VehicleTypeId &&
+                            x.FuelTypeId == entry.FuelTypeId &&
+                            x.IsActive)
+                        .OrderByDescending(x => x.ValidFrom)
+                        .FirstOrDefaultAsync();
+
+                    if (currentRate == null)
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = $"Rate not configured for VehicleType {entry.VehicleTypeId} and FuelType {entry.FuelTypeId}"
+                        });
+                    }
+
+                    // ===========================
+                    // Travel
+                    // ===========================
+
                     var travel = new ClaimTravel
                     {
                         ClaimId = claim.ClaimId,
@@ -695,20 +1165,27 @@ namespace HRPortal.API.Controllers
                         VehicleDetailId = entry.VehicleDetailId,
                         VehicleNumber = entry.VehicleNumber,
 
+                        // 👇 Snapshot of rate at claim creation time
+                        AppliedRatePerKm = currentRate.AmountPerKm,
+
                         TravelDate = entry.TravelDate,
                         Purpose = entry.Purpose,
                         FromLocation = entry.FromLocation,
                         ToLocation = entry.ToLocation,
+                        BusorTrainInvoiceNumber = entry.BusorTrainInvoiceNumber,
+                        TaxiInvoiceNumber = entry.TaxiInvoiceNumber,
                         KmRun = entry.KmRun,
                         Amount = entry.TravelAmount,
                         Remarks = entry.TravelRemarks,
-                        DocumentPath = string.Empty
+                        IsActive = true
                     };
 
                     _context.ClaimTravels.Add(travel);
-                    await _context.SaveChangesAsync();
 
-                    var food = new ClaimFood
+                    await _context.SaveChangesAsync();
+   
+
+                var food = new ClaimFood
                     {
                         TravelId = travel.TravelId,
 
@@ -718,7 +1195,9 @@ namespace HRPortal.API.Controllers
                         Lunch = entry.Lunch,
                         Dinner = entry.Dinner,
                         Amount = entry.FoodAmount,
-                        InvoiceNumber = string.Empty,
+                        BreakfastInvoiceNumber = entry.BreakfastInvoiceNumber,
+                        LunchInvoiceNumber = entry.LunchInvoiceNumber,
+                        DinnerInvoiceNumber = entry.DinnerInvoiceNumber,
                         DocumentPath = string.Empty
                     };
 
@@ -737,7 +1216,7 @@ namespace HRPortal.API.Controllers
                         ExpenseDate = entry.TravelDate,
                         Remarks = entry.ExpenseRemarks,
 
-                        DocumentPath = string.Empty,
+                        
                         created_at = DateTime.Now,
                         IsActive = true
                     };
@@ -779,32 +1258,7 @@ namespace HRPortal.API.Controllers
 
 
 
-        [HttpGet("get-all-claims")]
-        public async Task<IActionResult> GetAllClaims()
-        {
-            try
-            {
-                var claims = await _context.Set<ClaimListDto>()
-                    .FromSqlRaw("EXEC sp_GetAllClaims")
-                    .ToListAsync();
-
-                return Ok(new
-                {
-                    success = true,
-                    count = claims.Count,
-                    data = claims
-                });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "Error while fetching claims",
-                    error = ex.InnerException?.Message ?? ex.Message
-                });
-            }
-        }
+     
 
         [HttpGet("my-drafts/{empId}")]
         public async Task<IActionResult> GetMyDrafts(int empId)
@@ -948,36 +1402,42 @@ namespace HRPortal.API.Controllers
         {
             try
             {
-// ===========================
-// Claim Master
-// ===========================
+                var baseUrl = $"{Request.Scheme}://{Request.Host}";
 
+                // ===========================
+                // Claim Master
+                // ===========================
 
-    var claim = await _context.ClaimMasters
-        .FirstOrDefaultAsync(x =>
-            x.ClaimId == claimId &&
-            x.Status == "Draft" &&
-            x.IsActive);
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == claimId &&
+                        x.Status == "Draft" &&
+
+                        x.IsActive == true);
+
 
                 if (claim == null)
                 {
                     return NotFound(new
                     {
                         success = false,
-                        message = "Draft not found."});
+                        message = "Draft not found."
+                    });
                 }
 
                 // ===========================
-                // Get Travels
+                // Travels
                 // ===========================
 
                 var travels = await _context.ClaimTravels
-                    .Where(x => x.ClaimId == claimId)
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive)
                     .OrderBy(x => x.TravelId)
                     .ToListAsync();
 
                 // ===========================
-                // Get Documents
+                // Documents
                 // ===========================
 
                 var documents = await _context.ClaimDocuments
@@ -1013,11 +1473,13 @@ namespace HRPortal.API.Controllers
                         travel.FuelTypeId,
                         travel.VehicleDetailId,
                         travel.VehicleNumber,
-
+                        AppliedRatePerKm = travel.AppliedRatePerKm,
                         travel.TravelDate,
                         travel.Purpose,
                         travel.FromLocation,
                         travel.ToLocation,
+                        travel.BusorTrainInvoiceNumber,
+                        travel.TaxiInvoiceNumber,
                         travel.KmRun,
 
                         TravelAmount = travel.Amount,
@@ -1027,6 +1489,9 @@ namespace HRPortal.API.Controllers
                         Lunch = food?.Lunch ?? 0,
                         Dinner = food?.Dinner ?? 0,
                         FoodAmount = food?.Amount ?? 0,
+                        BreakfastInvoiceNumber = food.BreakfastInvoiceNumber,
+                        LunchInvoiceNumber = food.LunchInvoiceNumber,
+                        DinnerInvoiceNumber = food.DinnerInvoiceNumber,
 
                         TollAmount = expense?.TollAmount ?? 0,
                         AutoAmount = expense?.AutoAmount ?? 0,
@@ -1034,14 +1499,18 @@ namespace HRPortal.API.Controllers
                         ExpenseRemarks = expense?.Remarks ?? "",
 
                         Documents = documents
-                            .Where(d =>
-                                d.ReferenceId == travel.TravelId)
+                            .Where(d => d.ReferenceId == travel.TravelId)
                             .Select(d => new
                             {
                                 d.DocumentId,
+                                d.ReferenceId,
                                 d.ModuleType,
                                 d.DocumentType,
-                                d.FilePath,
+
+                                FilePath = string.IsNullOrEmpty(d.FilePath)
+                                    ? ""
+                                    : $"{baseUrl}/{d.FilePath.Replace("\\", "/")}",
+
                                 d.OriginalFileName
                             })
                             .ToList()
@@ -1053,9 +1522,8 @@ namespace HRPortal.API.Controllers
                 // ===========================
 
                 return Ok(new
-                {
+                {                                                                                                                                                                                                                                                                 
                     success = true,
-
                     data = new
                     {
                         claimId = claim.ClaimId,
@@ -1064,18 +1532,10 @@ namespace HRPortal.API.Controllers
                         claimMonth = claim.ClaimMonth,
                         totalAmount = claim.TotalAmount,
                         status = claim.Status,
+                        remarks = claim.Remarks,
 
-                        documents = documents.Select(d => new
-                        {
-                            d.DocumentId,
-                            d.ReferenceId,
-                            d.ModuleType,
-                            d.DocumentType,
-                            d.FilePath,
-                            d.OriginalFileName
-                        }),
 
-                        claimEntries = claimEntries
+                        claimEntries
                     }
                 });
             }
@@ -1088,38 +1548,269 @@ namespace HRPortal.API.Controllers
                     error = ex.InnerException?.Message ?? ex.Message
                 });
             }
+        }
+
+        //  [HttpPut("update-draft/{claimId}")]
+        //  public async Task<IActionResult> UpdateDraft(
+        //int claimId,
+        //[FromBody] CreateClaimDto dto)
+        //  {
+        //      await using var transaction =
+        //          await _context.Database.BeginTransactionAsync();
+
+        //      try
+        //      {
+        //          var claim = await _context.ClaimMasters
+        //          .FirstOrDefaultAsync(x =>
+        //          x.ClaimId == claimId &&
+        //           (x.Status == "Draft" || x.Status == "Rejected") &&
+        //          x.IsActive == true);
 
 
-}
+        //          if (claim == null)
+        //          {
+        //              return NotFound(new
+        //              {
+        //                  success = false,
+        //                  message = "Draft not found."
+        //              });
+        //          }
 
-        [HttpPut("update-draft/{claimId}")]         
+        //          decimal totalAmount =
+        //              dto.ClaimEntries.Sum(x =>
+        //                  x.TravelAmount +
+        //                  x.FoodAmount +
+        //                  (x.TollAmount ?? 0) +
+        //                  (x.AutoAmount ?? 0) +
+        //                  (x.OtherAmount ?? 0));
+
+        //          claim.ClaimMonth = dto.ClaimMonth;
+        //          claim.TotalAmount = totalAmount;
+        //          claim.Remarks = dto.ClaimEntries.FirstOrDefault()?.Remarks;
+        //          claim.LastModifiedAt = DateTime.Now;
+
+        //          await _context.SaveChangesAsync();
+
+        //          foreach (var entry in dto.ClaimEntries)
+        //          {
+        //              // ==================================
+        //              // Existing Travel
+        //              // ==================================
+
+        //              if (entry.TravelId.HasValue)
+        //              {
+        //                  var travel = await _context.ClaimTravels
+        //                      .FirstOrDefaultAsync(x =>
+        //                          x.TravelId == entry.TravelId &&
+        //                          x.ClaimId == claimId);
+
+        //                  if (travel != null)
+        //                  {
+        //                      travel.VehicleTypeId = entry.VehicleTypeId;
+        //                      travel.FuelTypeId = entry.FuelTypeId;
+        //                      travel.VehicleDetailId = entry.VehicleDetailId;
+        //                      travel.VehicleNumber = entry.VehicleNumber;
+
+        //                      travel.TravelDate = entry.TravelDate;
+        //                      travel.Purpose = entry.Purpose;
+        //                      travel.FromLocation = entry.FromLocation;
+        //                      travel.ToLocation = entry.ToLocation;
+        //                      travel.KmRun = entry.KmRun;
+        //                      travel.Amount = entry.TravelAmount;
+        //                      travel.Remarks = entry.TravelRemarks;
+
+        //                      var food = await _context.ClaimFoods
+        //                          .FirstOrDefaultAsync(x =>
+        //                              x.ClaimId == claimId &&
+        //                              x.TravelId == travel.TravelId);
+
+        //                      if (food != null)
+        //                      {
+        //                          food.FoodDate = entry.TravelDate;
+        //                          food.Breakfast = entry.Breakfast;
+        //                          food.Lunch = entry.Lunch;
+        //                          food.Dinner = entry.Dinner;
+        //                          food.Amount = entry.FoodAmount;
+        //                      }
+
+        //                      var expense = await _context.ClaimExpenses
+        //                          .FirstOrDefaultAsync(x =>
+        //                              x.ClaimId == claimId &&
+        //                              x.TravelId == travel.TravelId &&
+        //                              x.IsActive == true);
+
+        //                      if (expense != null)
+        //                      {
+        //                          expense.TollAmount = entry.TollAmount;
+        //                          expense.AutoAmount = entry.AutoAmount;
+        //                          expense.OtherAmount = entry.OtherAmount;
+
+        //                          expense.ExpenseDate = entry.TravelDate;
+        //                          expense.Remarks = entry.ExpenseRemarks;
+
+        //                      }
+        //                  }
+        //              }
+        //              else
+        //              {
+        //                  // ==================================
+        //                  // New Travel
+        //                  // ==================================
+
+        //                  var travel = new ClaimTravel
+        //                  {
+        //                      ClaimId = claimId,
+
+        //                      VehicleTypeId = entry.VehicleTypeId,
+        //                      FuelTypeId = entry.FuelTypeId,
+        //                      VehicleDetailId = entry.VehicleDetailId,
+        //                      VehicleNumber = entry.VehicleNumber,
+
+        //                      TravelDate = entry.TravelDate,
+        //                      Purpose = entry.Purpose,
+        //                      FromLocation = entry.FromLocation,
+        //                      ToLocation = entry.ToLocation,
+        //                      KmRun = entry.KmRun,
+        //                      Amount = entry.TravelAmount,
+        //                      Remarks = entry.TravelRemarks,
+
+        //                  };
+
+        //                  _context.ClaimTravels.Add(travel);
+
+        //                  await _context.SaveChangesAsync();
+
+        //                  var food = new ClaimFood
+        //                  {
+        //                      TravelId = travel.TravelId,
+        //                      ClaimId = claimId,
+
+        //                      FoodDate = entry.TravelDate,
+        //                      Breakfast = entry.Breakfast,
+        //                      Lunch = entry.Lunch,
+        //                      Dinner = entry.Dinner,
+        //                      Amount = entry.FoodAmount,
+
+        //                      InvoiceNumber = string.Empty,
+        //                      DocumentPath = string.Empty
+        //                  };
+
+        //                  _context.ClaimFoods.Add(food);
+
+        //                  var expense = new ClaimExpense
+        //                  {
+        //                      ClaimId = claimId,
+        //                      TravelId = travel.TravelId,
+
+        //                      TollAmount = entry.TollAmount,
+        //                      AutoAmount = entry.AutoAmount,
+        //                      OtherAmount = entry.OtherAmount,
+
+        //                      ExpenseDate = entry.TravelDate,
+        //                      Remarks = entry.ExpenseRemarks,                   
+        //                      created_at = DateTime.Now,
+        //                      IsActive = true
+        //                  };
+
+        //                  _context.ClaimExpenses.Add(expense);
+        //              }
+        //          }
+
+        //          await _context.SaveChangesAsync();
+
+        //          await transaction.CommitAsync();
+
+        //          return Ok(new
+        //          {
+        //              success = true,
+        //              message = "Draft updated successfully."
+        //          });
+        //      }
+        //      catch (Exception ex)
+        //      {
+        //          await transaction.RollbackAsync();
+
+        //          return StatusCode(500, new
+        //          {
+        //              success = false,
+        //              message = "Error while updating draft.",
+        //              error = ex.InnerException?.Message ?? ex.Message
+        //          });
+        //      }
+        //  }
+
+        [Authorize]
+        [HttpPut("update-draft/{claimId}")]
         public async Task<IActionResult> UpdateDraft(
-      int claimId,
-      [FromBody] CreateClaimDto dto)
+    int claimId,
+    [FromBody] CreateClaimDto dto)
         {
             await using var transaction =
                 await _context.Database.BeginTransactionAsync();
 
             try
             {
+                if (dto == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Request data is required."
+                    });
+                }
+
+                //------------------------------------------
+                // Login Employee
+                //------------------------------------------
+
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
+
+                if (string.IsNullOrEmpty(empIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "EmployeeId not found in token."
+                    });
+                }
+
+                int loginEmpId = int.Parse(empIdClaim);
+
+                //------------------------------------------
+                // Claim
+                //------------------------------------------
+
                 var claim = await _context.ClaimMasters
                     .FirstOrDefaultAsync(x =>
                         x.ClaimId == claimId &&
-                        x.Status == "Draft" &&
-                        x.IsActive == true);
+                        (x.Status == "Draft" || x.Status == "Rejected") &&
+                        x.IsActive);
 
                 if (claim == null)
                 {
                     return NotFound(new
                     {
                         success = false,
-                        message = "Draft not found."
+                        message = "Claim not found."
                     });
                 }
 
-                // =====================
-                // Recalculate Total
-                // =====================
+                //------------------------------------------
+                // Owner Validation
+                //------------------------------------------
+
+                if (claim.EmployeeId != loginEmpId)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "You are not authorized to update this claim."
+                    });
+                }
+
+                //------------------------------------------
+                // Total Amount
+                //------------------------------------------
 
                 decimal totalAmount =
                     dto.ClaimEntries.Sum(x =>
@@ -1129,99 +1820,279 @@ namespace HRPortal.API.Controllers
                         (x.AutoAmount ?? 0) +
                         (x.OtherAmount ?? 0));
 
-                // =====================
-                // Update Claim Master
-                // =====================
+                //------------------------------------------
+                // Claim Master Update
+                //------------------------------------------
 
+                claim.EmployeeId = dto.EmployeeId;
                 claim.ClaimMonth = dto.ClaimMonth;
+                claim.ClaimYear = dto.ClaimMonth.Year;
                 claim.TotalAmount = totalAmount;
+                claim.Remarks = dto.ClaimEntries.FirstOrDefault()?.Remarks;
                 claim.LastModifiedAt = DateTime.Now;
 
-                await _context.SaveChangesAsync();
-
-                // =====================
-                // Delete Old Rows
-                // =====================
-
-                var oldTravels = _context.ClaimTravels
-                    .Where(x => x.ClaimId == claimId);
-
-                _context.ClaimTravels.RemoveRange(oldTravels);
-
-                var oldFoods = _context.ClaimFoods
-                    .Where(x => x.ClaimId == claimId);
-
-                _context.ClaimFoods.RemoveRange(oldFoods);
-
-                var oldExpenses = _context.ClaimExpenses
-                    .Where(x => x.ClaimId == claimId);
-
-                _context.ClaimExpenses.RemoveRange(oldExpenses);
+                _context.Entry(claim).State = EntityState.Modified;
 
                 await _context.SaveChangesAsync();
 
-                // =====================
-                // Insert New Rows
-                // =====================
+                //------------------------------------------------
+                // PART-2
+                // Existing Travel Update + New Travel Insert
+                //------------------------------------------------
+                // ==================================
+                // Travel Update / Insert
+                // ==================================
 
                 foreach (var entry in dto.ClaimEntries)
                 {
-                    var travel = new ClaimTravel
+                    ClaimTravel travel;
+
+                    //=========================================
+                    // EXISTING TRAVEL
+                    //=========================================
+                    var currentRate = await _context.VehicleRateMasters
+    .Where(x =>
+        x.VehicleTypeId == entry.VehicleTypeId &&
+        x.FuelTypeId == entry.FuelTypeId &&
+        x.IsActive)
+    .OrderByDescending(x => x.ValidFrom)
+    .FirstOrDefaultAsync();
+
+                    if (currentRate == null)
                     {
-                        ClaimId = claimId,
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "Vehicle rate not configured."
+                        });
+                    }
 
-                        VehicleTypeId = entry.VehicleTypeId,
-                        FuelTypeId = entry.FuelTypeId,
-                        VehicleDetailId = entry.VehicleDetailId,
-                        VehicleNumber = entry.VehicleNumber,
-
-                        TravelDate = entry.TravelDate,
-                        Purpose = entry.Purpose,
-                        FromLocation = entry.FromLocation,
-                        ToLocation = entry.ToLocation,
-                        KmRun = entry.KmRun,
-                        Amount = entry.TravelAmount,
-                        Remarks = entry.TravelRemarks,
-                        DocumentPath = string.Empty
-                    };
-
-                    _context.ClaimTravels.Add(travel);
-                    await _context.SaveChangesAsync();
-
-                    var food = new ClaimFood
+                    if (entry.TravelId.HasValue && entry.TravelId.Value > 0)
                     {
-             
-                        ClaimId = claimId,
-                        FoodDate = entry.TravelDate,
-                        Breakfast = entry.Breakfast,
-                        Lunch = entry.Lunch,
-                        Dinner = entry.Dinner,
-                        Amount = entry.FoodAmount,
-                        InvoiceNumber = string.Empty,
-                        DocumentPath = string.Empty
-                    };
+                        travel = await _context.ClaimTravels
+                            .FirstOrDefaultAsync(x =>
+                                x.TravelId == entry.TravelId.Value &&
+                                x.ClaimId == claimId &&
+                                x.IsActive);
 
-                    _context.ClaimFoods.Add(food);
+                        if (travel == null)
+                        {
+                            continue;
+                        }
 
-                    var expense = new ClaimExpense
+                        travel.VehicleTypeId = entry.VehicleTypeId;
+                        travel.FuelTypeId = entry.FuelTypeId;
+                        travel.VehicleDetailId = entry.VehicleDetailId;
+                        travel.VehicleNumber = entry.VehicleNumber;
+
+                        travel.TravelDate = entry.TravelDate;
+                        travel.Purpose = entry.Purpose;
+                        travel.FromLocation = entry.FromLocation;
+                        travel.ToLocation = entry.ToLocation;
+                        travel.KmRun = entry.KmRun;
+                        travel.Amount = entry.TravelAmount;
+                        travel.Remarks = entry.TravelRemarks;
+                        travel.AppliedRatePerKm = currentRate.AmountPerKm;
+
+                        travel.BusorTrainInvoiceNumber = entry.BusorTrainInvoiceNumber;
+                        travel.TaxiInvoiceNumber = entry.TaxiInvoiceNumber;
+
+
+                        _context.ClaimTravels.Update(travel);
+
+                        //------------------------------------
+                        // FOOD
+                        //------------------------------------
+
+                        var food = await _context.ClaimFoods
+                            .FirstOrDefaultAsync(x =>
+                                x.ClaimId == claimId &&
+                                x.TravelId == travel.TravelId);
+
+                        if (food != null)
+                        {
+                            food.FoodDate = entry.TravelDate;
+                            food.Breakfast = entry.Breakfast;
+                            food.Lunch = entry.Lunch;
+                            food.Dinner = entry.Dinner;
+                            food.Amount = entry.FoodAmount;
+                            food.BreakfastInvoiceNumber = entry.BreakfastInvoiceNumber;
+                            food.LunchInvoiceNumber = entry.LunchInvoiceNumber;
+                            food.DinnerInvoiceNumber = entry.DinnerInvoiceNumber;
+                            _context.ClaimFoods.Update(food);
+                        }
+
+                        //------------------------------------
+                        // EXPENSE
+                        //------------------------------------
+
+                        var expense = await _context.ClaimExpenses
+                            .FirstOrDefaultAsync(x =>
+                                x.ClaimId == claimId &&
+                                x.TravelId == travel.TravelId &&
+                                x.IsActive);
+
+                        if (expense != null)
+                        {
+                            expense.TollAmount = entry.TollAmount;
+                            expense.AutoAmount = entry.AutoAmount;
+                            expense.OtherAmount = entry.OtherAmount;
+
+                            expense.ExpenseDate = entry.TravelDate;
+                            expense.Remarks = entry.ExpenseRemarks;
+
+                            _context.ClaimExpenses.Update(expense);
+                        }
+                        else
+                        {
+                            expense = new ClaimExpense
+                            {
+                                ClaimId = claimId,
+                                TravelId = travel.TravelId,
+
+                                TollAmount = entry.TollAmount,
+                                AutoAmount = entry.AutoAmount,
+                                OtherAmount = entry.OtherAmount,
+
+                                ExpenseDate = entry.TravelDate,
+                                Remarks = entry.ExpenseRemarks,
+                                created_at = DateTime.Now,
+                                IsActive = true
+                            };
+
+                            _context.ClaimExpenses.Add(expense);
+                        }
+                    }
+
+                    //=========================================
+                    // NEW TRAVEL
+                    //=========================================
+
+                    else
                     {
-                        ClaimId = claimId,
-                        TravelId = travel.TravelId,
+                        travel = new ClaimTravel
+                        {
+                            ClaimId = claimId,
 
-                        TollAmount = entry.TollAmount,
-                        AutoAmount = entry.AutoAmount,
-                        OtherAmount = entry.OtherAmount,
+                            VehicleTypeId = entry.VehicleTypeId,
+                            FuelTypeId = entry.FuelTypeId,
+                            VehicleDetailId = entry.VehicleDetailId,
+                            VehicleNumber = entry.VehicleNumber,
 
-                        ExpenseDate = entry.TravelDate,
-                        Remarks = entry.ExpenseRemarks,
+                            TravelDate = entry.TravelDate,
+                            Purpose = entry.Purpose,
+                            FromLocation = entry.FromLocation,
+                            ToLocation = entry.ToLocation,
+                            KmRun = entry.KmRun,
+                            BusorTrainInvoiceNumber = entry.BusorTrainInvoiceNumber,
+                            TaxiInvoiceNumber = entry.TaxiInvoiceNumber,
+                            Amount = entry.TravelAmount,
+                            Remarks = entry.TravelRemarks,
+                            AppliedRatePerKm = currentRate.AmountPerKm,
+                            IsActive = true
+                        };
 
-                        DocumentPath = string.Empty,
-                        created_at = DateTime.Now,
-                        IsActive = true
-                    };
+                        _context.ClaimTravels.Add(travel);
 
-                    _context.ClaimExpenses.Add(expense);
+                        await _context.SaveChangesAsync();
+
+                        var food = new ClaimFood
+                        {
+                            ClaimId = claimId,
+                            TravelId = travel.TravelId,
+
+                            FoodDate = entry.TravelDate,
+                            Breakfast = entry.Breakfast,
+                            Lunch = entry.Lunch,
+                            Dinner = entry.Dinner,
+                            Amount = entry.FoodAmount,
+
+                            BreakfastInvoiceNumber = entry.BreakfastInvoiceNumber,
+                            LunchInvoiceNumber = entry.LunchInvoiceNumber,
+                            DinnerInvoiceNumber = entry.DinnerInvoiceNumber,
+                            DocumentPath = ""
+                        };
+
+                        _context.ClaimFoods.Add(food);
+
+                        var expense = new ClaimExpense
+                        {
+                            ClaimId = claimId,
+                            TravelId = travel.TravelId,
+
+                            TollAmount = entry.TollAmount,
+                            AutoAmount = entry.AutoAmount,
+                            OtherAmount = entry.OtherAmount,
+
+                            ExpenseDate = entry.TravelDate,
+                            Remarks = entry.ExpenseRemarks,
+                            created_at = DateTime.Now,
+                            IsActive = true
+                        };
+
+                        _context.ClaimExpenses.Add(expense);
+                    }
                 }
+
+                await _context.SaveChangesAsync();
+                //=====================================================
+                // DELETE REMOVED TRAVELS
+                //=====================================================
+
+                var incomingTravelIds = dto.ClaimEntries
+                    .Where(x => x.TravelId.HasValue && x.TravelId.Value > 0)
+                    .Select(x => x.TravelId.Value)
+                    .ToList();
+
+                var removedTravels = await _context.ClaimTravels
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive &&
+                        !incomingTravelIds.Contains(x.TravelId))
+                    .ToListAsync();
+
+                foreach (var travel in removedTravels)
+                {
+                    travel.IsActive = false;
+
+                    var foods = await _context.ClaimFoods
+                        .Where(x =>
+                            x.ClaimId == claimId &&
+                            x.TravelId == travel.TravelId)
+                        .ToListAsync();
+
+                    foreach (var food in foods)
+                    {
+                        food.IsActive = false;
+                    }
+
+                    var expenses = await _context.ClaimExpenses
+                        .Where(x =>
+                            x.ClaimId == claimId &&
+                            x.TravelId == travel.TravelId)
+                        .ToListAsync();
+
+                    foreach (var expense in expenses)
+                    {
+                        expense.IsActive = false;
+                    }
+
+                    var documents = await _context.ClaimDocuments
+                        .Where(x =>
+                            x.ClaimId == claimId &&
+                            x.ReferenceId == travel.TravelId &&
+                            x.IsActive)
+                        .ToListAsync();
+
+                    foreach (var doc in documents)
+                    {
+                        doc.IsActive = false;
+                    }
+                }
+
+                //=====================================================
+                // SAVE
+                //=====================================================
 
                 await _context.SaveChangesAsync();
 
@@ -1233,6 +2104,7 @@ namespace HRPortal.API.Controllers
                     message = "Draft updated successfully."
                 });
             }
+
             catch (Exception ex)
             {
                 await transaction.RollbackAsync();
@@ -1247,51 +2119,291 @@ namespace HRPortal.API.Controllers
         }
 
 
-        [HttpPut("submit-draft/{claimId}")]
+            [HttpPut("submit-draft/{claimId}")]
         public async Task<IActionResult> SubmitDraft(int claimId)
         {
             try
             {
-                // ==========================================
-                // Get Draft Claim
-                // ==========================================
+                // =====================================
+                // Get Draft / Rejected Claim
+                // =====================================
 
                 var claim = await _context.ClaimMasters
                     .FirstOrDefaultAsync(x =>
                         x.ClaimId == claimId &&
-                        x.Status == "Draft" &&
-                        x.IsActive == true);
+                        (x.Status == "Draft" || x.Status == "Rejected") &&
+                        x.IsActive);
 
                 if (claim == null)
                 {
                     return NotFound(new
                     {
                         success = false,
-                        message = "Draft not found."
+                        message = "Claim not found."
                     });
                 }
 
-                // ==========================================
-                // Update Status
-                // ==========================================
+                // =====================================
+                // Check Resubmit
+                // =====================================
 
-                claim.Status = "Submitted";
+                bool isResubmit = claim.Status == "Rejected";
 
+                // =====================================
+                // Remove Old Approval Flow
+                // =====================================
+
+                var oldApprovals = await _context.ClaimApprovals
+                    .Where(x => x.ClaimId == claimId)
+                    .ToListAsync();
+
+                if (oldApprovals.Any())
+                {
+                    _context.ClaimApprovals.RemoveRange(oldApprovals);
+                    await _context.SaveChangesAsync();
+                }
+
+                // =====================================
+                // Reset Claim Status
+                // =====================================
+
+                claim.Status = "Pending";
+                
+                claim.CurrentApprovalLevel = 1;
                 claim.SubmittedAt = DateTime.Now;
-
+                claim.RejectedAt = null;
+                claim.ApprovedAt = null;
                 claim.LastModifiedAt = DateTime.Now;
 
                 await _context.SaveChangesAsync();
 
+                // =====================================
+                // Employee Details
+                // =====================================
+
+                var employee = await _context.EmployeeMasters
+                    .FirstOrDefaultAsync(x => x.EmpId == claim.EmployeeId);
+
+                if (employee == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Employee not found."
+                    });
+                }
+
+                // =====================================
+                // Level 1 - Reporting Manager
+                // =====================================
+
+                if (employee.ReportingManagerId.HasValue)
+                {
+                    _context.ClaimApprovals.Add(new ClaimApproval
+                    {
+                        ClaimId = claim.ClaimId,
+                        ApprovalLevel = 1,
+                        ApproverEmpId = employee.ReportingManagerId.Value,
+                        Status = "Pending",
+                        CreatedAt = DateTime.Now,
+                        ApprovalToken = Guid.NewGuid()
+                    });
+                }
+
+                // =====================================
+                // Level 2 - Reporting Manager's Manager
+                // =====================================
+
+                if (employee.ReportingManagerId.HasValue)
+                {
+                    var manager = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(x =>
+                            x.EmpId == employee.ReportingManagerId.Value);
+
+                    if (manager != null &&
+                        manager.ReportingManagerId.HasValue &&
+                        manager.ReportingManagerId.Value > 0)
+                    {
+                        _context.ClaimApprovals.Add(new ClaimApproval
+                        {
+                            ClaimId = claim.ClaimId,
+                            ApprovalLevel = 2,
+                            ApproverEmpId = manager.ReportingManagerId.Value,
+                            Status = "Pending",
+                            CreatedAt = DateTime.Now,
+                            ApprovalToken = Guid.NewGuid()
+                        });
+                    }
+                }
+
+                // =====================================
+                // Approval Matrix
+                // =====================================
+
+                var approvalMatrix = await _context.ApprovalMatrix
+                    .Where(x =>
+                        x.OrganizationId == employee.OrganizationId &&
+                        x.IsActive)
+                    .OrderBy(x => x.ApprovalLevel)
+                    .ToListAsync();
+
+                foreach (var item in approvalMatrix)
+                {
+                    var approver = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(x =>
+                            x.OrganizationId == employee.OrganizationId &&
+                            x.DesignationId == item.DesignationId);
+
+                    _context.ClaimApprovals.Add(new ClaimApproval
+                    {
+                        ClaimId = claim.ClaimId,
+                        ApprovalLevel = item.ApprovalLevel,
+                        ApproverEmpId = approver?.EmpId,   // NULL if no employee
+                        Status = "Pending",
+                        CreatedAt = DateTime.Now,
+                        ApprovalToken = approver != null ? Guid.NewGuid() : null
+                    });
+                }
+
+                await _context.SaveChangesAsync();
+
+                // =====================================
+                // Department Name
+                // =====================================
+
+                string departmentName = "-";
+
+                if (employee.DepartmentId.HasValue)
+                {
+                    var department = await _context.Department_Master
+                        .FirstOrDefaultAsync(x =>
+                            x.DepartmentId == employee.DepartmentId.Value);
+
+                    if (department != null)
+                    {
+                        departmentName = department.DepartmentName;
+                    }
+                }
+
+                // =====================================
+                // Purpose
+                // =====================================
+
+                var firstTravel = await _context.ClaimTravels
+                    .FirstOrDefaultAsync(x => x.ClaimId == claim.ClaimId);
+
+                string purpose = firstTravel?.Purpose ?? "-";
+
+                // =====================================
+                // Get First Approver
+                // =====================================
+
+                var firstApproval = await _context.ClaimApprovals
+                    .Where(x => x.ClaimId == claim.ClaimId)
+                    .OrderBy(x => x.ApprovalLevel)
+                    .FirstOrDefaultAsync();
+
+                if (firstApproval != null)
+                {
+                    var approver = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(x =>
+                            x.EmpId == firstApproval.ApproverEmpId);
+
+                    if (approver != null &&
+                        !string.IsNullOrWhiteSpace(approver.EmailId))
+                    {
+                        var baseUrl = _configuration["AppSettings:BaseUrl"];
+
+                        var approveUrl =
+                            $"{baseUrl}/api/TravelMaster/mail-approve?token={firstApproval.ApprovalToken}";
+
+                        var rejectUrl =
+                            $"{baseUrl}/api/TravelMaster/reject-form?token={firstApproval.ApprovalToken}";
+
+                        string body = $@"
+
+Dear {approver.FullName},
+
+<br/><br/>
+
+A new Local expense claim requires your approval.
+
+<br/><br/>
+
+<b>Employee Details</b>
+
+<ul>
+    <li>Employee Name : {employee.FullName}</li>
+    <li>Employee ID : {employee.EmployeeCode}</li>
+    <li>Department : {departmentName}</li>
+</ul>
+
+<b>Claim Details</b>
+
+<ul>
+    <li>Claim Number : {claim.ClaimNo}</li>
+    <li>Claim Type : Local Expense Claim</li>
+    <li>Claim Month : {claim.ClaimMonth:MMM-yyyy}</li>
+    <li>Amount : ₹{claim.TotalAmount:N2}</li>
+    <li>Status : Pending Approval</li>
+</ul>
+
+<b>Purpose</b>
+
+<p>{purpose}</p>
+
+<br/>
+
+<a href='{approveUrl}'
+style='background:green;
+color:white;
+padding:10px 20px;
+text-decoration:none;
+border-radius:5px;'>
+
+Approve
+
+</a>
+
+&nbsp;&nbsp;
+
+<a href='{rejectUrl}'
+style='background:red;
+color:white;
+padding:10px 20px;
+text-decoration:none;
+border-radius:5px;'>
+
+Reject
+
+</a>
+
+<br/><br/>
+
+Regards,<br/>
+Local Expense Claim Portal
+";
+
+                        await _emailService.SendEmailAsync(
+                            approver.EmailId,
+                            $"Claim Approval Required - {claim.ClaimNo}",
+                            body);
+                    }
+                }
+
                 return Ok(new
                 {
                     success = true,
-                    message = "Claim submitted successfully.",
+                    message = isResubmit
+                        ? "Claim resubmitted successfully."
+                        : "Claim submitted successfully.",
+
                     data = new
                     {
                         claim.ClaimId,
                         claim.ClaimNo,
                         claim.Status,
+                        claim.CurrentApprovalLevel,
                         claim.SubmittedAt
                     }
                 });
@@ -1306,7 +2418,6 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
-
 
         //-----Dropdown api for vehicle types and fueltypes ------>
         [HttpGet("vehicle-types")]
@@ -1533,42 +2644,1975 @@ namespace HRPortal.API.Controllers
                 Success = true
             });
         }
-        //[HttpPost("add-travel")]
 
-        //[HttpPost("upload")]
-        //public async Task<IActionResult> UploadFile(IFormFile file)
-        //{
-        //    try
-        //    {
-        //        if (file == null || file.Length == 0)
-        //            return BadRequest("Invalid file");
 
-        //        var folder = Path.Combine(Directory.GetCurrentDirectory(), "Uploads");
+        //------------APPROVAL FOR CLAIM----------------//
 
-        //        if (!Directory.Exists(folder))
-        //            Directory.CreateDirectory(folder);
+        [HttpPost("approve-claim")]
+        public async Task<IActionResult> ApproveClaim(
+      [FromBody] ClaimApprovalActionDto dto)
+        {
+            try
+            {
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
 
-        //        var filePath = Path.Combine(folder, file.FileName);
+                if (string.IsNullOrEmpty(empIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "EmployeeId not found in token."
+                    });
+                }
 
-        //        using (var stream = new FileStream(filePath, FileMode.Create))
-        //        {
-        //            await file.CopyToAsync(stream);
-        //        }
+                int empId = int.Parse(empIdClaim);
 
-        //        return Ok(new
-        //        {
-        //            path = file.FileName
-        //        });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return StatusCode(500, new
-        //        {
-        //            message = "An error occurred while uploading file",
-        //            error = ex.Message
-        //        });
-        //    }
-        //}
+                // =====================================
+                // Current Pending Approval
+                // =====================================
+
+                var approval = await _context.ClaimApprovals
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == dto.ClaimId &&
+                        x.ApproverEmpId == empId &&
+                        x.Status == "Pending");
+
+                if (approval == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Approval record not found."
+                    });
+                }
+
+                // =====================================
+                // Update Current Approval
+                // =====================================
+
+                approval.Status = "Approved";
+                approval.Remarks = dto.Remarks;
+                approval.ActionDate = DateTime.Now;
+
+                await _context.SaveChangesAsync();
+
+                // =====================================
+                // Get Claim
+                // =====================================
+
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x => x.ClaimId == dto.ClaimId);
+
+                if (claim == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Claim not found."
+                    });
+                }
+
+                ClaimApproval? nextPending = null;
+
+                // =====================================
+                // COMPANY FLOW
+                // Level 2 = Final Manual Approval
+                // =====================================
+
+                if (approval.ApprovalLevel == 2)
+                {
+                    claim.Status = "Approved";
+                    claim.ApprovedAt = DateTime.Now;
+                    claim.CurrentApprovalLevel = null;
+                    claim.LastModifiedAt = DateTime.Now;
+
+                    // Auto Approve Remaining Levels
+
+                    var remainingApprovals = await _context.ClaimApprovals
+                        .Where(x =>
+                            x.ClaimId == dto.ClaimId &&
+                            x.Status == "Pending")
+                        .ToListAsync();
+
+                    foreach (var item in remainingApprovals)
+                    {
+                        item.Status = "Approved";
+                        item.Remarks = "Auto Approved";
+                        item.ActionDate = DateTime.Now;
+                    }
+                }
+                else
+                {
+                    // Move To Next Approval
+
+                    nextPending = await _context.ClaimApprovals
+                        .Where(x =>
+                            x.ClaimId == dto.ClaimId &&
+                            x.Status == "Pending")
+                        .OrderBy(x => x.ApprovalLevel)
+                        .FirstOrDefaultAsync();
+
+                    if (nextPending != null)
+                    {
+                        claim.CurrentApprovalLevel = nextPending.ApprovalLevel;
+                        claim.LastModifiedAt = DateTime.Now;
+                    }
+                    else
+                    {
+                        claim.Status = "Approved";
+                        claim.ApprovedAt = DateTime.Now;
+                        claim.CurrentApprovalLevel = null;
+                        claim.LastModifiedAt = DateTime.Now;
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+                // =====================================
+                // SEND MAIL TO NEXT APPROVER
+                // =====================================
+
+                if (nextPending != null)
+                {
+                    var nextApprover = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(x => x.EmpId == nextPending.ApproverEmpId);
+
+                    var employee = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(x => x.EmpId == claim.EmployeeId);
+
+                    string departmentName = "-";
+
+                    if (employee?.DepartmentId != null)
+                    {
+                        var department = await _context.Department_Master
+                            .FirstOrDefaultAsync(x => x.DepartmentId == employee.DepartmentId.Value);
+
+                        if (department != null)
+                        {
+                            departmentName = department.DepartmentName;
+                        }
+                    }
+
+                    var firstTravel = await _context.ClaimTravels
+                        .FirstOrDefaultAsync(x => x.ClaimId == claim.ClaimId);
+
+                    string purpose = firstTravel?.Purpose ?? "-";
+
+                    if (nextApprover != null &&
+                        !string.IsNullOrWhiteSpace(nextApprover.EmailId))
+                    {
+                        var baseUrl = _configuration["AppSettings:BaseUrl"];
+
+                        var approveUrl =
+                            $"{baseUrl}/api/TravelMaster/mail-approve?token={nextPending.ApprovalToken}";
+
+                        var rejectUrl =
+                            $"{baseUrl}/api/TravelMaster/reject-form?token={nextPending.ApprovalToken}";
+                        string body = $@"
+
+Dear {nextApprover.FullName},
+
+<br/><br/>
+
+A new Local expense claim requires your approval.
+
+<br/><br/>
+
+<b>Employee Details</b>
+
+<ul>
+    <li>Employee Name : {employee.FullName}</li>
+    <li>Employee ID : {employee.EmployeeCode}</li>
+    <li>Department : {departmentName}</li>
+</ul>
+
+<b>Claim Details</b>
+
+<ul>
+    <li>Claim Number : {claim.ClaimNo}</li>
+    <li>Claim Type : Local Expense Claim</li>
+    <li>Claim Month : {claim.ClaimMonth:MMM-yyyy}</li>
+    <li>Amount : ₹{claim.TotalAmount:N2}</li>
+    <li>Status : Pending Approval</li>
+</ul>
+
+<b>Purpose</b>
+
+<p>{purpose}</p>
+
+<br/>
+
+<a href='{approveUrl}'
+style='background:green;
+color:white;
+padding:10px 20px;
+text-decoration:none;
+border-radius:5px;'>
+
+Approve
+
+</a>
+
+&nbsp;&nbsp;
+
+<a href='{rejectUrl}'
+style='background:red;
+color:white;
+padding:10px 20px;
+text-decoration:none;
+border-radius:5px;'>
+
+Reject
+
+</a>
+
+<br/><br/>
+
+Regards,<br/>
+Local Expense Claim Portal
+";
+
+                        await _emailService.SendEmailAsync(
+                            nextApprover.EmailId,
+                            $"Claim Approval Required - {claim.ClaimNo}",
+                            body);
+                    }
+                }
+
+                    return Ok(new
+                    {
+                        success = true,
+                        message = "Claim approved successfully."
+                    });
+                }
+            
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while approving claim.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [HttpGet("mail-approve")]
+        public async Task<IActionResult> MailApprove(Guid token)
+        {
+            try
+            {
+                var approval = await _context.ClaimApprovals
+                    .FirstOrDefaultAsync(x =>
+                        x.ApprovalToken == token &&
+                        x.Status == "Pending");
+
+                if (approval == null)
+                {
+                    return Content("Invalid Approval Link");
+                }
+
+                // =====================================
+                // Current Approval Update
+                // =====================================
+
+                approval.Status = "Approved";
+                approval.Remarks = "Approved From Email";
+                approval.ActionDate = DateTime.Now;
+
+                await _context.SaveChangesAsync();
+
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x => x.ClaimId == approval.ClaimId);
+
+                if (claim == null)
+                {
+                    return Content("Claim Not Found");
+                }
+
+                // =====================================
+                // COMPANY FLOW
+                // =====================================
+
+                ClaimApproval? nextPending = null;
+
+                if (approval.ApprovalLevel == 2)
+                {
+                    claim.Status = "Approved";
+                    claim.ApprovedAt = DateTime.Now;
+                    claim.CurrentApprovalLevel = null;
+                    claim.LastModifiedAt = DateTime.Now;
+
+                    // Auto Approve Remaining Levels
+
+                    var remainingApprovals = await _context.ClaimApprovals
+                        .Where(x =>
+                            x.ClaimId == claim.ClaimId &&
+                            x.Status == "Pending")
+                        .ToListAsync();
+
+                    foreach (var item in remainingApprovals)
+                    {
+                        item.Status = "Approved";
+                        item.Remarks = "Auto Approved";
+                        item.ActionDate = DateTime.Now;
+                    }
+                }
+                else
+                {
+                    nextPending = await _context.ClaimApprovals
+                        .Where(x =>
+                            x.ClaimId == claim.ClaimId &&
+                            x.Status == "Pending")
+                        .OrderBy(x => x.ApprovalLevel)
+                        .FirstOrDefaultAsync();
+
+                    if (nextPending != null)
+                    {
+                        claim.CurrentApprovalLevel = nextPending.ApprovalLevel;
+                        claim.LastModifiedAt = DateTime.Now;
+                    }
+                    else
+                    {
+                        claim.Status = "Approved";
+                        claim.ApprovedAt = DateTime.Now;
+                        claim.CurrentApprovalLevel = null;
+                        claim.LastModifiedAt = DateTime.Now;
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+                // =====================================
+                // SEND MAIL TO NEXT APPROVER
+                // =====================================
+
+                if (nextPending != null)
+                {
+                    var nextApprover = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(x =>
+                            x.EmpId == nextPending.ApproverEmpId);
+
+                    var employee = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(x => x.EmpId == claim.EmployeeId);
+
+                    string departmentName = "-";
+
+                    if (employee?.DepartmentId != null)
+                    {
+                        var department = await _context.Department_Master
+                            .FirstOrDefaultAsync(x =>
+                                x.DepartmentId == employee.DepartmentId.Value);
+
+                        if (department != null)
+                        {
+                            departmentName = department.DepartmentName;
+                        }
+                    }
+
+                    string purpose = "-";
+
+                    if (nextApprover != null &&
+                        !string.IsNullOrWhiteSpace(nextApprover.EmailId))
+                    {
+                        var baseUrl = _configuration["AppSettings:BaseUrl"];
+
+                        var approveUrl =
+                            $"{baseUrl}/api/TravelMaster/mail-approve?token={nextPending.ApprovalToken}";
+
+                        var rejectUrl =
+                            $"{baseUrl}/api/TravelMaster/reject-form?token={nextPending.ApprovalToken}";
+
+                        string body = $@"
+
+Dear {nextApprover.FullName},
+
+<br/><br/>
+
+A new Local expense claim requires your approval.
+
+<br/><br/>
+
+<b>Employee Details</b>
+
+<ul>
+    <li>Employee Name : {employee.FullName}</li>
+    <li>Employee ID : {employee.EmployeeCode}</li>
+    <li>Department : {departmentName}</li>
+</ul>
+
+<b>Claim Details</b>
+
+<ul>
+    <li>Claim Number : {claim.ClaimNo}</li>
+    <li>Claim Type : Local Expense Claim</li>
+    <li>Claim Month : {claim.ClaimMonth:MMM-yyyy}</li>
+    <li>Amount : ₹{claim.TotalAmount:N2}</li>
+    <li>Status : Pending Approval</li>
+</ul>
+
+<b>Purpose</b>
+
+<p>{purpose}</p>
+
+<br/>
+
+<a href='{approveUrl}'
+style='background:green;
+color:white;
+padding:10px 20px;
+text-decoration:none;
+border-radius:5px;'>
+
+Approve
+
+</a>
+
+&nbsp;&nbsp;
+
+<a href='{rejectUrl}'
+style='background:red;
+color:white;
+padding:10px 20px;
+text-decoration:none;
+border-radius:5px;'>
+
+Reject
+
+</a>
+
+<br/><br/>
+
+Regards,<br/>
+Local Expense Claim Portal
+";
+
+             
+
+                        await _emailService.SendEmailAsync(
+                            nextApprover.EmailId,
+                            $"Claim Approval Required - {claim.ClaimNo}",
+                            body);
+                    }
+                }
+                else
+                {
+                    claim.Status = "Approved";
+                    claim.ApprovedAt = DateTime.Now;
+                    claim.CurrentApprovalLevel = null;
+                    claim.LastModifiedAt = DateTime.Now;
+                }
+
+                await _context.SaveChangesAsync();
+
+                return Content(@"
+<!DOCTYPE html>
+<html>
+<head>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<meta charset=""utf-8"">
+<title>Claim Approved</title>
+<style>
+body{
+    font-family:Arial,sans-serif;
+    background:#f4f6f9;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+    margin:0;
+}
+.card{
+    background:white;
+    padding:30px;
+    border-radius:12px;
+    box-shadow:0 2px 10px rgba(0,0,0,0.15);
+    text-align:center;
+    width:90%;
+    max-width:400px;
+}
+.icon{
+    font-size:60px;
+}
+.title{
+    color:green;
+    font-size:24px;
+    font-weight:bold;
+    margin-top:10px;
+}
+.message{
+    margin-top:10px;
+    color:#555;
+}
+</style>
+</head>
+<body>
+
+<div class='card'>
+    <div class='icon' style='color:green;'>✔</div>
+    <div class='title'>Claim Approved</div>
+    <div class='message'>
+        The claim has been approved successfully.
+    </div>
+</div>
+
+</body>
+</html>
+", "text/html");
+            }
+            catch (Exception ex)
+            {
+                return Content(ex.Message);
+            }
+        }
+
+        [HttpPost("reject-claim")]
+        public async Task<IActionResult> RejectClaim([FromBody] ClaimApprovalActionDto dto)
+        {
+            try
+            {
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
+
+                if (string.IsNullOrEmpty(empIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "EmployeeId not found in token."
+                    });
+                }
+
+                int empId = int.Parse(empIdClaim);
+
+                // =====================================
+                // Get Current Pending Approval
+                // =====================================
+
+                var approval = await _context.ClaimApprovals
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == dto.ClaimId &&
+                        x.ApproverEmpId == empId &&
+                        x.Status == "Pending");
+
+                if (approval == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Approval record not found."
+                    });
+                }
+
+                // =====================================
+                // Get Claim
+                // =====================================
+
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x => x.ClaimId == dto.ClaimId);
+
+                if (claim == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Claim not found."
+                    });
+                }
+
+                // =====================================
+                // Reject Current Approval
+                // =====================================
+
+                string remarks = string.IsNullOrWhiteSpace(dto.Remarks)
+                    ? "NA"
+                    : dto.Remarks.Trim();
+
+                approval.Status = "Rejected";
+                approval.Remarks = remarks;
+                approval.ActionDate = DateTime.Now;
+
+                // =====================================
+                // Update Claim
+                // =====================================
+
+                claim.Status = "Rejected";
+                claim.Remarks = remarks;          // Save latest rejection reason
+                claim.RejectedAt = DateTime.Now;
+                claim.CurrentApprovalLevel = null;
+                claim.LastModifiedAt = DateTime.Now;
+
+                // =====================================
+                // Cancel Remaining Pending Approvals
+                // =====================================
+
+                var futureApprovals = await _context.ClaimApprovals
+                    .Where(x =>
+                        x.ClaimId == dto.ClaimId &&
+                        x.ApprovalLevel > approval.ApprovalLevel &&
+                        x.Status == "Pending")
+                    .ToListAsync();
+
+                foreach (var item in futureApprovals)
+                {
+                    item.Status = "Cancelled";
+                    item.Remarks = "Cancelled due to previous level rejection";
+                    item.ActionDate = DateTime.Now;
+                }
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Claim rejected successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while rejecting claim.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [HttpGet("mail-reject")]
+            public async Task<IActionResult> MailReject(Guid token)
+            {
+                try
+                {
+                    var approval = await _context.ClaimApprovals
+                        .FirstOrDefaultAsync(x =>
+                            x.ApprovalToken == token &&
+                            x.Status == "Pending");
+
+                if (approval == null)
+                {
+                    return Content("Invalid Rejection Link");
+                }
+
+                // =====================================
+                // Update Approval
+                // =====================================
+
+                string remarks = "Rejected From Email";
+
+                approval.Status = "Rejected";
+                approval.Remarks = remarks;
+                approval.ActionDate = DateTime.Now;
+
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x => x.ClaimId == approval.ClaimId);
+
+                if (claim != null)
+                {
+                    claim.Status = "Rejected";
+                    claim.Remarks = remarks;      // Save latest rejection reason
+                    claim.RejectedAt = DateTime.Now;
+                    claim.CurrentApprovalLevel = null;
+                    claim.LastModifiedAt = DateTime.Now;
+
+                    // =====================================
+                    // Cancel Remaining Pending Approvals
+                    // =====================================
+
+                    var futureApprovals = await _context.ClaimApprovals
+                        .Where(x =>
+                            x.ClaimId == approval.ClaimId &&
+                            x.ApprovalLevel > approval.ApprovalLevel &&
+                            x.Status == "Pending")
+                        .ToListAsync();
+
+                    foreach (var item in futureApprovals)
+                    {
+                        item.Status = "Cancelled";
+                        item.Remarks = "Cancelled due to previous level rejection";
+                        item.ActionDate = DateTime.Now;
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+
+                return Content(@"
+<!DOCTYPE html>
+<html>
+<head>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<meta charset=""utf-8"">
+<title>Claim Rejected</title>
+<style>
+body{
+    font-family:Arial,sans-serif;
+    background:#f4f6f9;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+    margin:0;
+}
+.card{
+    background:white;
+    padding:30px;
+    border-radius:12px;
+    box-shadow:0 2px 10px rgba(0,0,0,0.15);
+    text-align:center;
+    width:90%;
+    max-width:400px;
+}
+.icon{
+    font-size:60px;
+}
+.title{
+    color:red;
+    font-size:24px;
+    font-weight:bold;
+    margin-top:10px;
+}
+.message{
+    margin-top:10px;
+    color:#555;
+}
+</style>
+</head>
+<body>
+
+<div class='card'>
+    <div class='icon' style='color:red;'>✖</div>
+    <div class='title'>Claim Rejected</div>
+    <div class='message'>
+        The claim has been rejected successfully.
+    </div>
+</div>
+
+</body>
+</html>
+", "text/html");
+            }
+            catch (Exception ex)
+            {
+                return Content(ex.Message);
+            }
+        }
+
+
+        [HttpGet("reject-form")]
+        public IActionResult RejectForm(Guid token)
+        {
+            return Content($@"
+<!DOCTYPE html>
+<html>
+<head>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>Reject Claim</title>
+
+<style>
+body {{
+    margin:0;
+    padding:20px;
+    background:#f5f5f5;
+    font-family:Segoe UI,Arial,sans-serif;
+}}
+
+.card {{
+    max-width:500px;
+    margin:40px auto;
+    background:white;
+    padding:25px;
+    border-radius:12px;
+    box-shadow:0 2px 10px rgba(0,0,0,.15);
+}}
+
+h2 {{
+    text-align:center;
+    color:#dc3545;
+}}
+
+label {{
+    font-weight:600;
+}}
+
+textarea {{
+    width:100%;
+    min-height:120px;
+    margin-top:10px;
+    padding:10px;
+    border:1px solid #ccc;
+    border-radius:8px;
+    resize:none;
+}}
+
+button {{
+    width:100%;
+    margin-top:20px;
+    padding:12px;
+    background:#dc3545;
+    color:white;
+    border:none;
+    border-radius:8px;
+    font-size:16px;
+}}
+
+button:hover {{
+    background:#c82333;
+}}
+</style>
+</head>
+
+<body>
+
+<div class='card'>
+
+<h2>Reject Claim</h2>
+
+<form method='post' action='/api/TravelMaster/mail-reject'>
+
+<input type='hidden'
+       name='token'
+       value='{token}' />
+
+<label>Reason For Rejection</label>
+
+<textarea name='reason'>NA</textarea>
+
+<button type='submit'>
+Reject Claim
+</button>
+
+</form>
+
+</div>
+
+</body>
+</html>",
+        "text/html");
+        }
+
+        [HttpPost("mail-reject")]
+        public async Task<IActionResult> MailReject(
+    [FromForm] Guid token,
+    [FromForm] string reason)
+        {
+            try
+            {
+                // =====================================
+                // Find Pending Approval
+                // =====================================
+
+                var approval = await _context.ClaimApprovals
+                    .FirstOrDefaultAsync(x =>
+                        x.ApprovalToken == token &&
+                        x.Status == "Pending");
+
+                if (approval == null)
+                {
+                    return Content(@"
+<!DOCTYPE html>
+<html>
+<head>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+</head>
+
+<body style='font-family:Segoe UI;text-align:center;padding-top:70px;background:#f5f5f5'>
+
+<div style='max-width:500px;margin:auto;background:white;padding:30px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.15)'>
+
+<h2 style='color:red'>
+Invalid or Expired Rejection Link
+</h2>
+
+<p>
+This approval link has already been used or is no longer valid.
+</p>
+
+</div>
+
+</body>
+</html>",
+        "text/html");
+                }
+
+                // =====================================
+                // Reject Current Approval
+                // =====================================
+
+                approval.Status = "Rejected";
+
+                approval.Remarks =
+                    string.IsNullOrWhiteSpace(reason)
+                    ? "NA"
+                    : reason.Trim();
+
+                approval.ActionDate = DateTime.Now;
+
+                // =====================================
+                // Update Claim
+                // =====================================
+
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == approval.ClaimId);
+
+                if (claim == null)
+                {
+                    return Content("Claim Not Found");
+                }
+
+                claim.Status = "Rejected";
+                claim.RejectedAt = DateTime.Now;
+                claim.CurrentApprovalLevel = null;
+                claim.LastModifiedAt = DateTime.Now;
+
+                // =====================================
+                // Cancel Remaining Pending Approvals
+                // =====================================
+
+                var futureApprovals = await _context.ClaimApprovals
+                    .Where(x =>
+                        x.ClaimId == approval.ClaimId &&
+                        x.ApprovalLevel > approval.ApprovalLevel &&
+                        x.Status == "Pending")
+                    .ToListAsync();
+
+                foreach (var item in futureApprovals)
+                {
+                    item.Status = "Cancelled";
+                    item.Remarks = "Cancelled due to previous level rejection";
+                    item.ActionDate = DateTime.Now;
+                }
+
+                await _context.SaveChangesAsync();
+
+                // =====================================
+                // Success Page
+                // =====================================
+
+                return Content(@"
+<!DOCTYPE html>
+<html>
+<head>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+</head>
+
+<body style='font-family:Segoe UI;background:#f5f5f5'>
+
+<div style='max-width:500px;
+margin:80px auto;
+background:white;
+padding:40px;
+border-radius:12px;
+box-shadow:0 4px 15px rgba(0,0,0,.15);
+text-align:center;'>
+
+<div style='font-size:70px;color:#d32f2f'>
+❌
+</div>
+
+<h2 style='color:#d32f2f;margin-top:10px'>
+Claim Rejected Successfully
+</h2>
+
+<p style='font-size:16px;color:#555'>
+The claim has been rejected successfully.
+</p>
+
+<hr>
+
+<p>
+<b>Reason</b>
+</p>
+
+<div style='background:#fff3f3;
+padding:15px;
+border-left:5px solid #d32f2f;
+border-radius:6px;
+font-size:15px;'>
+
+" + (string.IsNullOrWhiteSpace(reason) ? "NA" : reason) + @"
+
+</div>
+
+<br>
+
+<p style='color:#888'>
+You may now close this window.
+</p>
+
+</div>
+
+</body>
+</html>",
+        "text/html");
+            }
+            catch (Exception ex)
+            {
+                return Content($@"
+<html>
+<body style='font-family:Segoe UI;text-align:center;padding-top:60px'>
+<h2 style='color:red'>Error</h2>
+<p>{ex.Message}</p>
+</body>
+</html>",
+        "text/html");
+            }
+        }
+
+
+        //-------Reject resubmit Apiii-------------//
+
+        [HttpPut("resubmit-claim/{claimId}")]
+        public async Task<IActionResult> ResubmitClaim(
+    int claimId,
+    [FromBody] CreateClaimDto dto)
+        {
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                if (dto == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Request data is required."
+                    });
+                }
+
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
+
+                if (string.IsNullOrEmpty(empIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "EmployeeId not found in token."
+                    });
+                }
+
+                int loginEmpId = int.Parse(empIdClaim);
+
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x => x.ClaimId == claimId);
+
+                if (claim == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Claim not found."
+                    });
+                }
+
+                if (claim.EmployeeId != loginEmpId)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "You are not authorized to edit this claim."
+                    });
+                }
+
+                if (claim.Status != "Rejected")
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Only rejected claims can be resubmitted."
+                    });
+                }
+
+                decimal totalAmount = dto.ClaimEntries.Sum(x =>
+                    x.TravelAmount +
+                    x.FoodAmount +
+                    (x.TollAmount ?? 0) +
+                    (x.AutoAmount ?? 0) +
+                    (x.OtherAmount ?? 0));
+
+                // ===============================
+                // Update Claim Master
+                // ===============================
+
+                claim.ClaimMonth = dto.ClaimMonth;
+                claim.ClaimYear = dto.ClaimMonth.Year;
+                claim.TotalAmount = totalAmount;
+                claim.Remarks = dto.ClaimEntries.FirstOrDefault()?.Remarks;
+
+                claim.Status = "Pending";
+                claim.SubmittedAt = DateTime.Now;
+                claim.ApprovedAt = null;
+                claim.RejectedAt = null;
+                claim.CurrentApprovalLevel = 1;
+                claim.LastModifiedAt = DateTime.Now;
+
+                await _context.SaveChangesAsync();
+                // ==========================================
+                // Delete Old Travel / Food / Expense
+                // ==========================================
+
+                var oldTravels = await _context.ClaimTravels
+                    .Where(x => x.ClaimId == claim.ClaimId)
+                    .ToListAsync();
+
+                var oldFoods = await _context.ClaimFoods
+                    .Where(x => x.ClaimId == claim.ClaimId)
+                    .ToListAsync();
+
+                var oldExpenses = await _context.ClaimExpenses
+                    .Where(x => x.ClaimId == claim.ClaimId)
+                    .ToListAsync();
+
+                _context.ClaimExpenses.RemoveRange(oldExpenses);
+                _context.ClaimFoods.RemoveRange(oldFoods);
+                _context.ClaimTravels.RemoveRange(oldTravels);
+
+                await _context.SaveChangesAsync();
+
+                // ==========================================
+                // Insert Updated Claim Entries
+                // ==========================================
+
+                foreach (var item in dto.ClaimEntries)
+                {
+                    var currentRate = await _context.VehicleRateMasters
+    .Where(x =>
+        x.VehicleTypeId == item.VehicleTypeId &&
+        x.FuelTypeId == item.FuelTypeId &&
+        x.IsActive)
+    .OrderByDescending(x => x.ValidFrom)
+    .FirstOrDefaultAsync();
+
+                    if (currentRate == null)
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = $"Rate not configured for VehicleType {item.VehicleTypeId} and FuelType {item.FuelTypeId}"
+                        });
+                    }
+                    // ----------------------------
+                    // Travel
+                    // ----------------------------
+
+                    var travel = new ClaimTravel
+                    {
+                        VehicleTypeId = item.VehicleTypeId,
+                        FuelTypeId = item.FuelTypeId,
+                        VehicleDetailId = item.VehicleDetailId,
+                        VehicleNumber = item.VehicleNumber,
+                        AppliedRatePerKm = currentRate.AmountPerKm,
+                        ClaimId = claim.ClaimId,
+                        TravelDate = item.TravelDate,
+                        Purpose = item.Purpose,
+                        FromLocation = item.FromLocation,
+                        ToLocation = item.ToLocation,
+                        KmRun = item.KmRun,
+                        BusorTrainInvoiceNumber = item.BusorTrainInvoiceNumber,
+                        TaxiInvoiceNumber = item.TaxiInvoiceNumber,
+                        Amount = item.TravelAmount,
+                        Remarks = item.TravelRemarks,
+                        IsActive = true
+                    };
+
+                    _context.ClaimTravels.Add(travel);
+
+                    await _context.SaveChangesAsync();
+
+                    // ----------------------------
+                    // Food
+                    // ----------------------------
+
+                    var food = new ClaimFood
+                    {
+                        ClaimId = claim.ClaimId,
+                        TravelId = travel.TravelId,
+                        FoodDate = item.TravelDate,
+                        Breakfast = item.Breakfast,
+                        Lunch = item.Lunch,
+                        Dinner = item.Dinner,
+                        Amount = item.FoodAmount,
+                        BreakfastInvoiceNumber = item.BreakfastInvoiceNumber,
+                        LunchInvoiceNumber = item.LunchInvoiceNumber,
+                        DinnerInvoiceNumber = item.DinnerInvoiceNumber,
+                        IsActive = true
+                    };
+
+                    _context.ClaimFoods.Add(food);
+
+                    // ----------------------------
+                    // Expense
+                    // ----------------------------
+
+                    if ((item.TollAmount ?? 0) > 0)
+                    {
+                        _context.ClaimExpenses.Add(new ClaimExpense
+                        {
+                            ClaimId = claim.ClaimId,
+                            TravelId = travel.TravelId,
+                           
+                            ExpenseDate = item.TravelDate,
+                            TollAmount = item.TollAmount ?? 0,
+                            Remarks = item.ExpenseRemarks,
+                            IsActive = true,
+                            created_at = DateTime.Now
+                        });
+                    }
+
+                    if ((item.AutoAmount ?? 0) > 0)
+                    {
+                        _context.ClaimExpenses.Add(new ClaimExpense
+                        {
+                            ClaimId = claim.ClaimId,
+                            TravelId = travel.TravelId,
+                            
+                            ExpenseDate = item.TravelDate,
+                            AutoAmount = item.AutoAmount ?? 0,
+                            Remarks = item.ExpenseRemarks,
+                            IsActive = true,
+                            created_at = DateTime.Now
+                        });
+                    }
+
+                    if ((item.OtherAmount ?? 0) > 0)
+                    {
+                        _context.ClaimExpenses.Add(new ClaimExpense
+                        {
+                            ClaimId = claim.ClaimId,
+                            TravelId = travel.TravelId,
+                            
+                            ExpenseDate = item.TravelDate,
+                            OtherAmount = item.OtherAmount ?? 0,
+                            Remarks = item.ExpenseRemarks,
+                            IsActive = true,
+                            created_at = DateTime.Now
+                        });
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+                // ==========================================
+                // Delete Old Approval Records
+                // ==========================================
+
+                var oldApprovals = await _context.ClaimApprovals
+                    .Where(x => x.ClaimId == claim.ClaimId)
+                    .ToListAsync();
+
+                _context.ClaimApprovals.RemoveRange(oldApprovals);
+
+                await _context.SaveChangesAsync();
+
+                // ==========================================
+                // Recreate Approval Flow
+                // ==========================================
+
+                var employee = await _context.EmployeeMasters
+                    .FirstOrDefaultAsync(x => x.EmpId == claim.EmployeeId);
+
+                if (employee == null)
+                {
+                    throw new Exception("Employee not found.");
+                }
+
+                // ==========================
+                // Level 1 - Reporting Manager
+                // ==========================
+
+                if (employee.ReportingManagerId.HasValue)
+                {
+                    _context.ClaimApprovals.Add(new ClaimApproval
+                    {
+                        ClaimId = claim.ClaimId,
+                        ApprovalLevel = 1,
+                        ApproverEmpId = employee.ReportingManagerId.Value,
+                        Status = "Pending",
+                        CreatedAt = DateTime.Now,
+                        ApprovalToken = Guid.NewGuid()
+                    });
+                }
+
+                // ==========================
+                // Level 2 - Manager's Manager
+                // ==========================
+
+                if (employee.ReportingManagerId.HasValue)
+                {
+                    var manager = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(x => x.EmpId == employee.ReportingManagerId.Value);
+
+                    if (manager != null &&
+                        manager.ReportingManagerId.HasValue &&
+                        manager.ReportingManagerId.Value > 0)
+                    {
+                        _context.ClaimApprovals.Add(new ClaimApproval
+                        {
+                            ClaimId = claim.ClaimId,
+                            ApprovalLevel = 2,
+                            ApproverEmpId = manager.ReportingManagerId.Value,
+                            Status = "Pending",
+                            CreatedAt = DateTime.Now,
+                            ApprovalToken = Guid.NewGuid()
+                        });
+                    }
+                }
+
+                // ==========================
+                // HR / Accounts
+                // ==========================
+
+                var approvalMatrix = await _context.ApprovalMatrix
+                    .Where(x =>
+                        x.OrganizationId == employee.OrganizationId &&
+                        x.IsActive)
+                    .OrderBy(x => x.ApprovalLevel)
+                    .ToListAsync();
+
+                foreach (var item in approvalMatrix)
+                {
+                    var approver = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(x =>
+                            x.OrganizationId == employee.OrganizationId &&
+                            x.DesignationId == item.DesignationId);
+
+                    _context.ClaimApprovals.Add(new ClaimApproval
+                    {
+                        ClaimId = claim.ClaimId,
+                        ApprovalLevel = item.ApprovalLevel,
+                        ApproverEmpId = approver?.EmpId,
+                        Status = "Pending",
+                        CreatedAt = DateTime.Now,
+                        ApprovalToken = Guid.NewGuid()
+                    });
+                }
+
+                await _context.SaveChangesAsync();
+
+                // ==========================================
+                // First Approver
+                // ==========================================
+
+                var firstApproval = await _context.ClaimApprovals
+                    .Where(x => x.ClaimId == claim.ClaimId)
+                    .OrderBy(x => x.ApprovalLevel)
+                    .FirstOrDefaultAsync();
+                // ==========================================
+                // Send Mail To Level 1
+                // ==========================================
+
+                if (firstApproval != null)
+                {
+                    var approver = await _context.EmployeeMasters
+                        .FirstOrDefaultAsync(x => x.EmpId == firstApproval.ApproverEmpId);
+
+                    if (approver != null &&
+                        !string.IsNullOrWhiteSpace(approver.EmailId))
+                    {
+                        string departmentName = "-";
+
+                        if (employee.DepartmentId.HasValue)
+                        {
+                            var department = await _context.Department_Master
+                                .FirstOrDefaultAsync(x => x.DepartmentId == employee.DepartmentId.Value);
+
+                            if (department != null)
+                            {
+                                departmentName = department.DepartmentName;
+                            }
+                        }
+
+                        string purpose = dto.ClaimEntries
+                            .FirstOrDefault()?.Purpose ?? "-";
+
+                        var baseUrl = _configuration["AppSettings:BaseUrl"];
+
+                        var approveUrl =
+                            $"{baseUrl}/api/TravelMaster/mail-approve?token={firstApproval.ApprovalToken}";
+
+                        var rejectUrl =
+                            $"{baseUrl}/api/TravelMaster/reject-form?token={firstApproval.ApprovalToken}";
+
+                        string body = $@"
+
+Dear {approver.FullName},
+
+<br/><br/>
+
+A new Local expense claim requires your approval.
+
+<br/><br/>
+
+<b>Employee Details</b>
+
+<ul>
+    <li>Employee Name : {employee.FullName}</li>
+    <li>Employee ID : {employee.EmployeeCode}</li>
+    <li>Department : {departmentName}</li>
+</ul>
+
+<b>Claim Details</b>
+
+<ul>
+    <li>Claim Number : {claim.ClaimNo}</li>
+    <li>Claim Type : Local Expense Claim</li>
+    <li>Claim Month : {claim.ClaimMonth:MMM-yyyy}</li>
+    <li>Amount : ₹{claim.TotalAmount:N2}</li>
+    <li>Status : Pending Approval</li>
+</ul>
+
+<b>Purpose</b>
+
+<p>{purpose}</p>
+
+<br/>
+
+<a href='{approveUrl}'
+style='background:green;
+color:white;
+padding:10px 20px;
+text-decoration:none;
+border-radius:5px;'>
+
+Approve
+
+</a>
+
+&nbsp;&nbsp;
+
+<a href='{rejectUrl}'
+style='background:red;
+color:white;
+padding:10px 20px;
+text-decoration:none;
+border-radius:5px;'>
+
+Reject
+
+</a>
+
+<br/><br/>
+
+Regards,<br/>
+Local Expense Claim Portal
+";
+
+                        try
+                        {
+                            await _emailService.SendEmailAsync(
+                                approver.EmailId,
+                                $"Resubmitted Claim Approval Required - {claim.ClaimNo}",
+                                body);
+                        }
+                        catch
+                        {
+                            // Mail failure should NOT stop resubmission
+                        }
+                    }
+                }
+
+                await transaction.CommitAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Claim resubmitted successfully.",
+                    claimId = claim.ClaimId,
+                    claimNo = claim.ClaimNo
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message,
+                    error = ex.InnerException?.Message
+                });
+            }
+        }
+
+        [HttpGet("pending-approvals")]
+        public async Task<IActionResult> GetPendingApprovals()
+        {
+            try
+            {
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
+
+                if (string.IsNullOrEmpty(empIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "EmployeeId not found in token."
+                    });
+                }
+
+                int empId = int.Parse(empIdClaim);
+
+                var data = await (
+                    from ca in _context.ClaimApprovals
+                    join cm in _context.ClaimMasters
+                        on ca.ClaimId equals cm.ClaimId
+                    join emp in _context.EmployeeMasters
+                        on cm.EmployeeId equals emp.EmpId
+                    where ca.ApproverEmpId == empId
+                          && ca.Status == "Pending"
+                          && cm.Status == "Pending"
+                          && cm.CurrentApprovalLevel == ca.ApprovalLevel
+                    select new
+                    {
+                        cm.ClaimId,
+                        cm.ClaimNo,
+
+                        EmployeeId = emp.EmpId,
+                        EmployeeName = emp.FullName,
+                        EmployeeCode = emp.EmployeeCode,
+
+                        cm.TotalAmount,
+                        cm.ClaimMonth,
+
+                        ApprovalLevel = ca.ApprovalLevel,
+                        SubmittedDate = cm.SubmittedAt,
+                        PendingSince = ca.CreatedAt
+                    })
+                    .OrderByDescending(x => x.PendingSince)
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    count = data.Count,
+                    data
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while fetching pending approvals.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+
+        [HttpGet("claim-approval-history/{claimId}")]
+        public async Task<IActionResult> GetClaimApprovalHistory(int claimId)
+        {
+            try
+            {
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x => x.ClaimId == claimId);
+
+                if (claim == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Claim not found."
+                    });
+                }
+
+                var approvals = await _context.ClaimApprovals
+                    .Where(x => x.ClaimId == claimId)
+                    .OrderBy(x => x.ApprovalLevel)
+                    .Select(x => new
+                    {
+                        x.ApprovalLevel,
+                        x.ApproverEmpId,
+                        x.Status,
+                        x.Remarks,
+                        x.ActionDate
+                    })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    currentApprovalLevel = claim.CurrentApprovalLevel,
+                    claimStatus = claim.Status,
+                    data = approvals
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while fetching approval history.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+     
+
+        [HttpGet("my-claims")]
+        public async Task<IActionResult> GetMyClaims()
+        {
+            try
+            {
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
+
+                if (string.IsNullOrEmpty(empIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "EmployeeId not found in token."
+                    });
+                }
+
+                int empId = int.Parse(empIdClaim);
+
+                var claims = await _context.ClaimMasters
+                    .Where(x =>
+                        x.EmployeeId == empId &&
+                        x.Status != "Draft")
+                    .OrderByDescending(x => x.ClaimId)
+                    .ToListAsync();
+
+                var result = new List<MyClaimDto>();
+
+                foreach (var claim in claims)
+                {
+                    var approvals = await _context.ClaimApprovals
+                        .Where(x => x.ClaimId == claim.ClaimId)
+                        .OrderBy(x => x.ApprovalLevel)
+                        .ToListAsync();
+
+                    // ===========================================
+                    // Last Action
+                    // ===========================================
+
+                    string lastActionBy = "-";
+                    string lastAction = "-";
+
+                    var lastActionRecord = approvals
+                        .Where(x =>
+                            x.Status == "Approved" ||
+                            x.Status == "Rejected")
+                        .OrderByDescending(x => x.ApprovalLevel)
+                        .FirstOrDefault();
+
+                    if (lastActionRecord != null)
+                    {
+                        lastAction = lastActionRecord.Status;
+
+                        var approver = await _context.EmployeeMasters
+                            .FirstOrDefaultAsync(x =>
+                                x.EmpId == lastActionRecord.ApproverEmpId);
+
+                        if (approver != null)
+                        {
+                            lastActionBy = approver.FullName;
+                        }
+                    }
+
+                    // ===========================================
+                    // Approval Status
+                    // ===========================================
+
+                    string GetStatus(int level)
+                    {
+                        var approval = approvals
+                            .FirstOrDefault(x => x.ApprovalLevel == level);
+
+                        if (approval == null)
+                            return "-";
+
+                        switch (approval.Status)
+                        {
+                            case "Approved":
+                                return "Approved";
+
+                            case "Rejected":
+                                return "Rejected";
+
+                            case "Cancelled":
+                                return "Cancelled";
+
+                            case "Pending":
+                                if (claim.CurrentApprovalLevel == level)
+                                    return "Waiting For Approval";
+                                return "Pending";
+
+                            default:
+                                if (claim.Status == "Approved")
+                                    return "Approved";
+                                return "Pending";
+                        }
+                    }
+
+                    result.Add(new MyClaimDto
+                    {
+                        ClaimId = claim.ClaimId,
+                        ClaimNo = claim.ClaimNo ?? "",
+                        ClaimMonth = claim.ClaimMonth,
+                        TotalAmount = claim.TotalAmount ?? 0,
+                        Status = claim.Status,
+                        Remarks = claim.Remarks,
+                        CurrentApprovalLevel = claim.CurrentApprovalLevel,
+
+                        LastActionBy = lastActionBy,
+                        LastAction = lastAction,
+
+                        Approver1 = GetStatus(1),
+                        Approver2 = GetStatus(2),
+                        HrLevel1 = GetStatus(3),
+                        HrLevel2 = GetStatus(4),
+                        Accounts = GetStatus(5)
+                    });
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    count = result.Count,
+                    data = result
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message,
+                    error = ex.InnerException?.Message
+                });
+            }
+        }
+
+        [HttpGet("claim-details/{claimId}")]
+        public async Task<IActionResult> GetClaimDetails(int claimId)
+        {
+            try
+            {
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x => x.ClaimId == claimId);
+
+                if (claim == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Claim not found."
+                    });
+                }
+
+                var employee = await _context.EmployeeMasters
+                 .FirstOrDefaultAsync(x => x.EmpId == claim.EmployeeId);
+
+                string? designationName = null;
+
+                if (employee?.DesignationId != null)
+                {
+                    designationName = await _context.Designation
+                        .Where(d => d.Id == employee.DesignationId)
+                        .Select(d => d.Name)
+                        .FirstOrDefaultAsync();
+                }
+
+
+                // =====================================
+                // Travel Details
+                // =====================================
+
+                var travels = await (
+    from t in _context.ClaimTravels
+    join v in _context.VehicleMaster
+        on t.VehicleTypeId equals v.VehicleId
+    join f in _context.FuelTypeMasters
+        on t.FuelTypeId equals f.FuelTypeId
+    where t.ClaimId == claimId
+    select new
+    {
+        t.TravelId,
+
+        t.VehicleTypeId,
+        VehicleType = v.VehicleName,
+
+        t.FuelTypeId,
+        FuelType = f.FuelTypeName,
+
+        t.VehicleDetailId,
+        t.VehicleNumber,
+
+        t.AppliedRatePerKm,
+
+        t.TravelDate,
+        t.Purpose,
+        t.FromLocation,
+        t.ToLocation,
+        t.BusorTrainInvoiceNumber,
+        t.TaxiInvoiceNumber,
+        t.KmRun,
+        t.Amount,
+        t.Remarks
+    }).ToListAsync();
+
+                // =====================================
+                // Food Details
+                // =====================================
+
+                var foods = await _context.ClaimFoods
+                    .Where(x => x.ClaimId == claimId)
+                    .ToListAsync();
+
+                // =====================================
+                // Expense Details
+                // =====================================
+
+                var expenses = await _context.ClaimExpenses
+                    .Where(x => x.ClaimId == claimId)
+                    .ToListAsync();
+
+                // =====================================
+                // Documents
+                // =====================================
+
+                var documents = await _context.ClaimDocuments
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive)
+                    .Select(x => new
+                    {
+                        x.DocumentId,
+                        x.ReferenceId,
+                        x.ModuleType,
+                        x.DocumentType,
+                        x.OriginalFileName,
+                        x.StoredFileName,
+                        x.FileExtension,
+                        x.FilePath,
+                        x.UploadedDate
+                    })
+                    .ToListAsync();
+
+                // =====================================
+                // Approval History
+                // =====================================
+
+                var approvals = await _context.ClaimApprovals
+                    .Where(x => x.ClaimId == claimId)
+                    .OrderBy(x => x.ApprovalLevel)
+                    .Select(x => new
+                    {
+                        x.ApprovalLevel,
+                        x.ApproverEmpId,
+                        ApproverName = _context.EmployeeMasters
+            .Where(e => e.EmpId == x.ApproverEmpId)
+            .Select(e => e.FullName)
+            .FirstOrDefault(),
+
+                        x.Status,
+                        x.Remarks,
+                        x.ActionDate
+                    })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+
+                    claim = new
+                    {
+                        claim.ClaimId,
+                        claim.Remarks,
+                        claim.ClaimNo,
+                        claim.EmployeeId,
+                        EmployeeName = employee?.FullName,
+                        Designation = designationName,
+
+
+                        claim.ClaimMonth,
+                        claim.TotalAmount,
+                        claim.Status,
+                        claim.CurrentApprovalLevel,
+                        claim.CreatedAt,
+                        claim.SubmittedAt,
+                        claim.ApprovedAt,
+                        claim.RejectedAt
+                    },
+
+                    travels,
+                    foods,
+                    expenses,
+                    documents,
+                    approvals
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while fetching claim details.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        //----------------EMail set up-------------------/
+
+        public class EmailService
+    {
+        private readonly EmailSettings _settings;
+
+        public EmailService(IOptions<EmailSettings> options)
+        {
+            _settings = options.Value;
+        }
+
+        public async Task SendEmailAsync(
+            string toEmail,
+            string subject,
+            string body)
+        {
+            try
+            {
+                var email = new MimeMessage();
+
+                email.From.Add(
+                    new MailboxAddress(
+                        _settings.DisplayName,
+                        _settings.Email));
+
+                email.To.Add(
+                    MailboxAddress.Parse(toEmail));
+
+                email.Subject = subject;
+
+                email.Body = new TextPart("html")
+                {
+                    Text = body
+                };
+
+                using var smtp = new SmtpClient();
+
+                await smtp.ConnectAsync(
+                    _settings.Host,
+                    _settings.Port,
+                    SecureSocketOptions.StartTls);
+
+                await smtp.AuthenticateAsync(
+                    _settings.Email,
+                    _settings.Password);
+
+                await smtp.SendAsync(email);
+
+                await smtp.DisconnectAsync(true);
+            }
+            catch
+            {
+                throw;
+            }
+        }
+}
+
+        
+
+
         //--------------------------------LOcal Purchase Page--------------------//
 
         //[Authorize]
