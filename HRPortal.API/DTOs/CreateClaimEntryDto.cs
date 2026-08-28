@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations.Schema;
+﻿using System.ComponentModel.DataAnnotations;
 
 namespace HRPortal.API.DTOs
 {
@@ -7,56 +7,41 @@ namespace HRPortal.API.DTOs
         // Vehicle
         public int VehicleTypeId { get; set; }
 
-        public int FuelTypeId { get; set; }
+        public int? FuelTypeId { get; set; }
 
         public int? VehicleDetailId { get; set; }
 
-        public string VehicleNumber { get; set; }
+        public string? VehicleNumber { get; set; }
 
-        [Column("remarks")]
-        public string? Remarks { get; set; }
 
         // Travel
         public int? TravelId { get; set; }
+
         public DateTime TravelDate { get; set; }
 
-        public string Purpose { get; set; }
+        public string Purpose { get; set; } = string.Empty;
 
-        public string FromLocation { get; set; }
+        public string FromLocation { get; set; } = string.Empty;
 
-        public string ToLocation { get; set; }
+        public string ToLocation { get; set; } = string.Empty;
 
-        public string? BusorTrainInvoiceNumber { get; set; }
-        public string? TaxiInvoiceNumber { get; set; }
-
-        public int KmRun { get; set; }
+        public int? KmRun { get; set; }
 
         public decimal TravelAmount { get; set; }
 
-        public string TravelRemarks { get; set; }
 
         // Food
-        public decimal Breakfast { get; set; }
-
-        public decimal Lunch { get; set; }
-
-        public decimal Dinner { get; set; }
+        // 1 = Breakfast
+        // 2 = Lunch
+        // 3 = Dinner
+        // 4 = Whole Day
+        public int? FoodTypeId { get; set; }
 
         public decimal FoodAmount { get; set; }
 
-        public string? BreakfastInvoiceNumber { get; set; }
-
-        public string? LunchInvoiceNumber { get; set; }
-
-        public string? DinnerInvoiceNumber { get; set; }
 
         // Expense
-        public decimal? TollAmount { get; set; }
-
-        public decimal? AutoAmount { get; set; }
-
-        public decimal? OtherAmount { get; set; }
-
-        public string ExpenseRemarks { get; set; }
+        // Toll / Other
+        public List<ClaimExpenseDto>? Expenses { get; set; }
     }
 }

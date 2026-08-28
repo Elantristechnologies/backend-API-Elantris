@@ -79,12 +79,31 @@ builder.Services.AddScoped<EmailService>();
 // Swagger
 builder.Services.AddEndpointsApiExplorer();
 
-builder.Services.AddSwaggerGen(c =>
+//builder.Services.AddSwaggerGen(c =>
+//{
+//    c.ResolveConflictingActions(apiDescriptions => apiDescriptions.First());
+//});
+
+builder.Services.AddSwaggerGen(options =>
 {
-    c.ResolveConflictingActions(apiDescriptions => apiDescriptions.First());
+    options.ResolveConflictingActions(apiDescriptions => apiDescriptions.First());
+
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "Enter your JWT token"
+    });
+
+    options.AddSecurityRequirement(document =>
+        new OpenApiSecurityRequirement
+        {
+            [new OpenApiSecuritySchemeReference("Bearer", document)] = new List<string>()
+        });
 });
-
-
 
 
 var app = builder.Build();

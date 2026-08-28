@@ -1,4 +1,5 @@
 ﻿
+using DocumentFormat.OpenXml.Vml.Office;
 using HRPortal.API.DTOs;
 using HRPortal.API.Models;
 using Microsoft.EntityFrameworkCore;
@@ -59,12 +60,14 @@ namespace HRPortal.API.Data
         public DbSet<ApprovalMatrix> ApprovalMatrix { get; set; }
         public DbSet<ClaimTravel> ClaimTravels { get; set; }
         public DbSet<ClaimFood> ClaimFoods { get; set; }
+        public DbSet<FoodTypeMaster> FoodTypeMasters { get; set; }
         public DbSet<ClaimExpense> ClaimExpenses { get; set; }
         public DbSet<ClaimDocument> ClaimDocuments { get; set; }
         public DbSet<DraftClaimView> DraftClaims { get; set; }
         public DbSet<LocalPurchase> LocalPurchases { get; set; }
 
-
+        //-----------NumberSeriesConfiguration-----------
+        public DbSet<NumberSeriesConfiguration> NumberSeriesConfigurations { get; set; }
 
         //--------------------Expenses tracker ----------
         public DbSet<ExpenseMaster> ExpenseMaster { get; set; }
@@ -101,7 +104,14 @@ namespace HRPortal.API.Data
             modelBuilder.Entity<EmployeeAccessResultsdto>().HasNoKey();
             modelBuilder.Entity<PayslipDTO>().HasNoKey();
             modelBuilder.Entity<LoginResponseDto>().HasNoKey();
-            modelBuilder.Entity<OrganizationMaster>().HasKey(x => x.OrganizationId);
+            modelBuilder.Entity<FoodTypeMaster>(entity =>
+            {
+                entity.ToTable("FoodType_Master");
+
+                entity.HasKey(x => x.FoodTypeId);
+            });
+
+
 
             modelBuilder.Entity<ExpenseMasterResponse>()
            .HasNoKey();

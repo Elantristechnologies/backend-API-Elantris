@@ -13,7 +13,7 @@ namespace HRPortal.API.Models
         [Column("claim_id")]
         public int ClaimId { get; set; }
         [Column("vehicle_number")]
-        public string VehicleNumber { get; set; }
+        public string? VehicleNumber { get; set; }
 
         [Column("vehicle_type_id")]
         public int? VehicleTypeId { get; set; }
@@ -41,9 +41,7 @@ namespace HRPortal.API.Models
         [Column("amount")]
         public decimal? Amount { get; set; }
 
-        [Column("remarks")]
-        public string? Remarks { get; set; }
-
+    
 
         [Column("is_active")]
         public bool IsActive { get; set; } = true;
@@ -51,10 +49,7 @@ namespace HRPortal.API.Models
         [Column("applied_rate_per_km")]
         public decimal? AppliedRatePerKm { get; set; }
 
-        [Column("taxi_invoice_number")]
-        public string? TaxiInvoiceNumber { get; set; }
-
-        [Column("bus_train_invoice_number")]
-        public string? BusorTrainInvoiceNumber { get; set; }
+      
+       
     }
 }

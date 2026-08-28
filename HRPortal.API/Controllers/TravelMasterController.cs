@@ -3,11 +3,16 @@ using DocumentFormat.OpenXml.InkML;
 using HRPortal.API.Data;
 using HRPortal.API.DTOs;
 using HRPortal.API.Models;
+using MailKit.Net.Smtp;
+using MailKit.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using MimeKit;
 using System.Collections;
 using System.Data.Common;
 using System.Net;
@@ -16,10 +21,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json;
 using static System.Runtime.InteropServices.JavaScript.JSType;
-using MailKit.Net.Smtp;
-using MailKit.Security;
-using MimeKit;
-using Microsoft.Extensions.Options;
 
 
 
@@ -115,27 +116,56 @@ namespace HRPortal.API.Controllers
 
                 int employeeId = Convert.ToInt32(empIdClaim);
 
-                // Get Active Vehicles
+                // Get active vehicles
                 var vehicles = await _context.Vehicles
                     .Where(v => v.EmployeeId == employeeId && v.IsActive)
-                    .Select(v => new
-                    {
-                        v.VehicleId,
-                        v.VehicleType,
-                        v.VehicleNumber,
-                        v.GearType,
-                        v.FuelType,
-                        v.CCRange
-                    })
                     .ToListAsync();
+
+                var result = new List<object>();
+
+                foreach (var vehicle in vehicles)
+                {
+                    // Find Vehicle Type ID using Vehicle Type Name
+                    var vehicleType = await _context.VehicleMaster
+                        .FirstOrDefaultAsync(x =>
+                            x.VehicleName == vehicle.VehicleType &&
+                            x.IsActive);
+
+                    // Find Fuel Type ID using Fuel Type Name
+                    var fuelType = await _context.FuelTypeMasters
+                        .FirstOrDefaultAsync(x =>
+                            x.FuelTypeName == vehicle.FuelType &&
+                            x.IsActive);
+
+                    result.Add(new
+                    {
+                        vehicleDetailId = vehicle.VehicleId,
+
+                        vehicleTypeId = vehicleType?.VehicleId ?? 0,
+
+                        fuelTypeId = fuelType?.FuelTypeId ?? 0,
+
+                        vehicleNumber = vehicle.VehicleNumber,
+
+                        vehicleType = vehicle.VehicleType,
+
+                        fuelType = vehicle.FuelType,
+
+                        gearType = vehicle.GearType,
+
+                        ccRange = vehicle.CCRange
+                    });
+                }
 
                 return Ok(new
                 {
                     success = true,
-                    message = vehicles.Any()
+
+                    message = result.Any()
                         ? "Vehicles fetched successfully."
                         : "No vehicles found.",
-                    data = vehicles
+
+                    data = result
                 });
             }
             catch (Exception ex)
@@ -149,7 +179,7 @@ namespace HRPortal.API.Controllers
             }
         }
 
-
+        [Authorize]
         [HttpPut("update/{vehicleId}")]
         public async Task<IActionResult> UpdateVehicle(int vehicleId, [FromBody] Vehicle model)
         {
@@ -216,8 +246,8 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
-
-       [HttpDelete("soft-delete/{vehicleId}")]
+        [Authorize]
+        [HttpDelete("soft-delete/{vehicleId}")]
 public async Task<IActionResult> DeleteVehicle(int vehicleId)
 {
     try
@@ -256,7 +286,7 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
 
         //-----------Travel form FROm ANd To localtion and calculate distonse//------//
 
-
+         
         [HttpGet("location-search")]
         public async Task<IActionResult> SearchLocation(string text)
         {
@@ -354,8 +384,365 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
         }
         //-----------------ENd--------------------------------------//
 
-        //-------------------Admin VehicleRate ditails-------------//
 
+
+        //-----------NumberSeriesConfiguration----------------------//
+        [Authorize]
+        [HttpGet("number-series-configurations")]
+        public async Task<IActionResult> GetNumberSeriesConfigurations()
+        {
+            try
+            {
+                var data = await _context.NumberSeriesConfigurations
+                    .Where(x => x.IsActive)
+                    .OrderBy(x => x.ModuleName)
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    Success = true,
+                    Message = "Active configurations fetched successfully.",
+                    Data = data
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new
+                {
+                    Success = false,
+                    Message = "An error occurred while fetching configurations.",
+                    Error = ex.Message,
+                    InnerException = ex.InnerException?.Message
+                });
+            }
+        }
+        [Authorize]
+        [HttpGet("number-series-configurations/{id}")]
+        public async Task<IActionResult> GetNumberSeriesConfigurationById(int id)
+        {
+            try
+            {
+                var configuration = await _context.NumberSeriesConfigurations
+                    .FirstOrDefaultAsync(x => x.Id == id);
+
+                if (configuration == null)
+                {
+                    return NotFound(new
+                    {
+                        Success = false,
+                        Message = "Configuration not found."
+                    });
+                }
+
+                return Ok(new
+                {
+                    Success = true,
+                    Message = "Configuration fetched successfully.",
+                    Data = configuration
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new
+                {
+                    Success = false,
+                    Message = "An error occurred while fetching the configuration.",
+                    Error = ex.Message,
+                    InnerException = ex.InnerException?.Message
+                });
+            }
+        }
+        [Authorize]
+        [HttpPost("number-series-configurations")]
+        public async Task<IActionResult> AddNumberSeriesConfiguration(
+         [FromBody] NumberSeriesConfigurationDto dto)
+        {
+            try
+            {
+                if (dto == null)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Request data is required."
+                    });
+                }
+
+                if (string.IsNullOrWhiteSpace(dto.ModuleName))
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Module name is required."
+                    });
+                }
+
+                if (string.IsNullOrWhiteSpace(dto.Prefix))
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Prefix is required."
+                    });
+                }
+
+                if (string.IsNullOrWhiteSpace(dto.CurrentNumber))
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Current number is required."
+                    });
+                }
+
+                var employeeIdClaim = User.FindFirst("EmpId")?.Value;
+
+                if (!int.TryParse(employeeIdClaim, out int employeeId))
+                {
+                    return Unauthorized(new
+                    {
+                        Success = false,
+                        Message = "Invalid employee information."
+                    });
+                }
+
+                var exists = await _context.NumberSeriesConfigurations
+                    .AnyAsync(x =>
+                        x.ModuleName == dto.ModuleName &&
+                        x.IsActive);
+
+                if (exists)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Configuration already exists for this module."
+                    });
+                }
+
+                var configuration = new NumberSeriesConfiguration
+                {
+                    ModuleName = dto.ModuleName.Trim(),
+
+                    Prefix = dto.Prefix.Trim(),
+
+                    Suffix = string.IsNullOrWhiteSpace(dto.Suffix)
+                        ? null
+                        : dto.Suffix.Trim(),
+
+                    // Exact value preserved
+                    // "01" -> "01"
+                    // "36" -> "36"
+                    // "0036" -> "0036"
+                    CurrentNumber = dto.CurrentNumber.Trim(),
+
+                    IncludeFinancialYear = dto.IncludeFinancialYear,
+
+                    IsActive = true,
+
+                    CreatedBy = employeeId,
+                    CreatedDate = DateTime.Now,
+
+                    ModifiedBy = null,
+                    ModifiedDate = null
+                };
+
+                _context.NumberSeriesConfigurations.Add(configuration);
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    Success = true,
+                    Message = "Configuration created successfully.",
+                    Data = configuration
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    new
+                    {
+                        Success = false,
+                        Message = "An error occurred while creating the configuration.",
+                        Error = ex.Message,
+                        InnerException = ex.InnerException?.Message
+                    });
+            }
+        }
+        [Authorize]
+        [HttpPut("number-series-configurations/{id}")]
+        public async Task<IActionResult> UpdateNumberSeriesConfiguration(int id, NumberSeriesConfigurationDto dto)
+        {
+            try
+            {
+                var employeeId = Convert.ToInt32(User.FindFirst("EmpId")?.Value);
+
+                var configuration = await _context.NumberSeriesConfigurations
+                    .FirstOrDefaultAsync(x => x.Id == id);
+
+                if (configuration == null)
+                {
+                    return NotFound(new
+                    {
+                        Success = false,
+                        Message = "Configuration not found."
+                    });
+                }
+
+                configuration.ModuleName = dto.ModuleName;
+                configuration.Prefix = dto.Prefix;
+                configuration.Suffix = dto.Suffix;
+              
+                configuration.CurrentNumber = dto.CurrentNumber;
+            
+                configuration.IncludeFinancialYear = dto.IncludeFinancialYear;
+                configuration.IsActive = dto.IsActive;
+                configuration.ModifiedDate = DateTime.Now;
+                configuration.CreatedDate = DateTime.Now;
+                configuration.CreatedBy = employeeId;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    Success = true,
+                    Message = "Configuration updated successfully.",
+                    Data = configuration
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Success = false,
+                    Message = "An error occurred while updating the configuration.",
+                    Error = ex.Message,
+                    InnerException = ex.InnerException?.Message
+                });
+            }
+        }
+        [Authorize]
+        [HttpDelete("number-series-configurations/{id}")]
+        public async Task<IActionResult> DeleteNumberSeriesConfiguration(int id)
+        {
+            try
+            {
+                var configuration = await _context.NumberSeriesConfigurations
+                    .FirstOrDefaultAsync(x => x.Id == id);
+
+                if (configuration == null)
+                {
+                    return NotFound(new
+                    {
+                        Success = false,
+                        Message = "Configuration not found."
+                    });
+                }
+
+                if (!configuration.IsActive)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Configuration is already deleted."
+                    });
+                }
+
+                configuration.IsActive = false;
+                configuration.ModifiedDate = DateTime.Now;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    Success = true,
+                    Message = "Configuration deleted successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new
+                {
+                    Success = false,
+                    Message = "An error occurred while deleting the configuration.",
+                    Error = ex.Message,
+                    InnerException = ex.InnerException?.Message
+                });
+            }
+        }
+        private async Task<string> GenerateClaimNumber(string moduleName)
+        {
+            var configuration = await _context.NumberSeriesConfigurations
+                .FirstOrDefaultAsync(x =>
+                    x.ModuleName == moduleName &&
+                    x.IsActive);
+
+            if (configuration == null)
+            {
+                throw new Exception(
+                    $"Number series configuration not found for module '{moduleName}'.");
+            }
+
+            string runningNumber = configuration.CurrentNumber;
+
+            if (string.IsNullOrWhiteSpace(runningNumber))
+            {
+                throw new Exception(
+                    $"Current number is empty for module '{moduleName}'.");
+            }
+
+            // Prefix
+            // DB: LEC-  -> LEC
+            string prefix = configuration.Prefix?
+                .Trim()
+                .TrimEnd('-') ?? "";
+
+            // Suffix
+            // DB: -26/27 -> 26/27
+            string suffix = configuration.Suffix?
+                .Trim()
+                .Trim('-') ?? "";
+
+            string claimNumber;
+
+            if (configuration.IncludeFinancialYear)
+            {
+                claimNumber = $"{prefix}-{runningNumber}-{suffix}";
+            }
+            else
+            {
+                claimNumber = $"{prefix}-{runningNumber}";
+            }
+
+            // Increment CurrentNumber
+
+            if (!int.TryParse(
+                configuration.CurrentNumber,
+                out int currentNumber))
+            {
+                throw new Exception(
+                    $"Invalid current number '{configuration.CurrentNumber}' " +
+                    $"for module '{moduleName}'.");
+            }
+
+            int digitLength = configuration.CurrentNumber.Length;
+
+            currentNumber++;
+
+            configuration.CurrentNumber =
+                currentNumber.ToString($"D{digitLength}");
+
+            configuration.ModifiedDate = DateTime.Now;
+
+            await _context.SaveChangesAsync();
+
+            return claimNumber;
+        }
+
+        //-------------------Admin VehicleRate ditails-------------//
+        [Authorize]
         [HttpPost("VehicleRateMasters")]
         public async Task<IActionResult> AddVehicleRate([FromBody] VehicleRateDto dto)
         {
@@ -437,7 +824,7 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
                 });
             }
         }
-
+        [Authorize]
         [HttpGet("VehicleRateMasters")]
         public async Task<IActionResult> GetVehicleRates()
         {
@@ -481,7 +868,7 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
                 });
             }
         }
-
+        [Authorize]
         [HttpGet("VehicleRate")]
         public async Task<IActionResult> GetVehicleRate(
     int vehicleTypeId,
@@ -536,7 +923,7 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
                 });
             }
         }
-
+        [Authorize]
         [HttpPut("VehicleRateMasters/{id}")]
         public async Task<IActionResult> UpdateVehicleRate(int id, [FromBody] VehicleRateDto dto)
         {
@@ -629,7 +1016,7 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
                 });
             }
         }
-
+        [Authorize]
         [HttpDelete("VehicleRateMasters/{id}")]
         public async Task<IActionResult> DeleteVehicleRate(int id)
         {
@@ -706,6 +1093,7 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
 
 
         // GET all purposes
+        [Authorize]
         [HttpGet("purposes")]
         public async Task<IActionResult> GetPurposes()
         {
@@ -726,6 +1114,7 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
         }
 
         // ADD purpose
+        [Authorize]
         [HttpPost("all Purpose")]
         public async Task<IActionResult> AddPurpose(Purpose purpose)
         {
@@ -747,6 +1136,7 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
         }
 
         // DELETE purpose
+        [Authorize]
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeletePurpose(int id)
         {
@@ -776,30 +1166,74 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
 
 
         [HttpGet("next-claim-number")]
-        public async Task<IActionResult> GetNextClaimNumber()
+        public async Task<IActionResult> GetNextClaimNumber(
+     [FromQuery] string moduleName)
         {
             try
             {
-                var lastClaim = await _context.ClaimMasters
-                    .OrderByDescending(x => x.ClaimId)
-                    .FirstOrDefaultAsync();
-
-                int nextNumber = (lastClaim?.ClaimId ?? 0) + 1;
-
-                var today = DateTime.Now;
-
-                string financialYear;
-
-                if (today.Month >= 4)
+                if (string.IsNullOrWhiteSpace(moduleName))
                 {
-                    financialYear = $"{today.Year}/{today.Year + 1}";
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Module name is required."
+                    });
+                }
+
+                var configuration = await _context.NumberSeriesConfigurations
+                    .FirstOrDefaultAsync(x =>
+                        x.ModuleName == moduleName &&
+                        x.IsActive);
+
+                if (configuration == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = $"Configuration not found for module '{moduleName}'."
+                    });
+                }
+
+                // CurrentNumber exact format is preserved
+                // "01" -> "01"
+                // "36" -> "36"
+                // "0036" -> "0036"
+                string runningNumber = configuration.CurrentNumber;
+
+                string financialYear = string.Empty;
+
+                if (configuration.IncludeFinancialYear)
+                {
+                    var today = DateTime.Now;
+
+                    if (today.Month >= 4)
+                    {
+                        financialYear =
+                            $"{today.Year}/{today.Year + 1}";
+                    }
+                    else
+                    {
+                        financialYear =
+                            $"{today.Year - 1}/{today.Year}";
+                    }
+                }
+
+                string claimNumber;
+
+                // "-" is fixed separator
+                if (configuration.IncludeFinancialYear)
+                {
+                    claimNumber =
+                        $"{configuration.Prefix}-" +
+                        $"{runningNumber}-" +
+                        $"{financialYear}";
                 }
                 else
                 {
-                    financialYear = $"{today.Year - 1}/{today.Year}";
+                    claimNumber =
+                        $"{configuration.Prefix}-" +
+                        $"{runningNumber}";
                 }
-
-                var claimNumber = $"LEC-{nextNumber:D4}-{financialYear}";
 
                 return Ok(new
                 {
@@ -809,21 +1243,57 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
             }
             catch (Exception ex)
             {
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    new
+                    {
+                        success = false,
+                        message = "Error while generating claim number.",
+                        error = ex.Message,
+                        innerException = ex.InnerException?.Message
+                    });
+            }
+        }
+        [Authorize]
+        [HttpGet("food-types")]
+        public async Task<IActionResult> GetFoodTypes()
+        {
+            try
+            {
+                var foodTypes = await _context.FoodTypeMasters
+                    .Where(x => x.IsActive)
+                    .OrderBy(x => x.FoodTypeId)
+                    .Select(x => new
+                    {
+                        foodTypeId = x.FoodTypeId,
+                        foodTypeName = x.FoodTypeName
+                    })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    data = foodTypes
+                });
+            }
+            catch (Exception ex)
+            {
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Error while generating claim number.",
-                    error = ex.Message
+                    message = "Error while fetching food types.",
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
-
+        [Authorize]
         [HttpPost("create-claim")]
         public async Task<IActionResult> CreateClaim(
-          [FromBody] CreateClaimDto dto,
-          [FromQuery] bool isSubmit = false)
+            [FromBody] CreateClaimDto dto,
+            [FromQuery] bool isSubmit = false)
         {
-            await using var transaction = await _context.Database.BeginTransactionAsync();
+            await using var transaction =
+                await _context.Database.BeginTransactionAsync();
 
             try
             {
@@ -854,82 +1324,100 @@ public async Task<IActionResult> DeleteVehicle(int vehicleId)
                     });
                 }
 
-                // ===========================
-                // Calculate Total Amount
-                // ===========================
+                // ============================================
+                // ONE EMPLOYEE = ONE CLAIM PER MONTH
+                // ============================================
+
+                var claimMonth = dto.ClaimMonth.Month;
+                var claimYear = dto.ClaimMonth.Year;
+
+                var existingClaim = await _context.ClaimMasters
+       .FirstOrDefaultAsync(x =>
+           x.EmployeeId == dto.EmployeeId &&
+           x.ClaimMonth.Month == claimMonth &&
+           x.ClaimYear == claimYear &&
+           x.IsActive);
+
+                if (existingClaim != null &&
+                    existingClaim.Status != "Draft" &&
+                    existingClaim.Status != "Rejected")
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = $"Claim already exists for {dto.ClaimMonth:MMMM yyyy}."
+                    });
+                }
+
+
+
+                // ============================================
+                // CALCULATE TOTAL AMOUNT
+                // ============================================
 
                 decimal totalAmount = dto.ClaimEntries.Sum(x =>
                     x.TravelAmount +
                     x.FoodAmount +
-                    (x.TollAmount ?? 0) +
-                    (x.AutoAmount ?? 0) +
-                    (x.OtherAmount ?? 0));
+                    (x.Expenses?.Sum(e => e.ExpenseAmount) ?? 0)
+                );
 
-                // ===========================
-                // Create Claim Master
-                // ===========================
+                // ============================================
+                // CREATE CLAIM MASTER
+                // ============================================
 
-                var claim = new ClaimMaster
+                ClaimMaster claim;
+
+                if (existingClaim != null)
                 {
-                    EmployeeId = dto.EmployeeId,
-                    ClaimMonth = dto.ClaimMonth,
-                    ClaimYear = dto.ClaimMonth.Year,
-                    CreatedAt = DateTime.Now,
-                    LastModifiedAt = DateTime.Now,
-                    TotalAmount = totalAmount,
-                    IsActive = true,
-                    Status = isSubmit ? "Pending" : "Draft",
-                    SubmittedAt = isSubmit ? DateTime.Now : null,
-                    CurrentApprovalLevel = isSubmit ? 1 : null,
-                    Remarks = dto.ClaimEntries.FirstOrDefault()?.Remarks
-                };
+                    // Existing monthly draft
+                    claim = existingClaim;
 
-                _context.ClaimMasters.Add(claim);
+                    // Add this save's amount to existing claim total
+                    claim.TotalAmount = (claim.TotalAmount ?? 0) + totalAmount;
 
-                await _context.SaveChangesAsync();
-
-    //---------for claim number genrate ---//
-
-                var lastClaim = await _context.ClaimMasters
-    .Where(x => !string.IsNullOrEmpty(x.ClaimNo))
-    .OrderByDescending(x => x.ClaimId)
-    .FirstOrDefaultAsync();
-
-                int nextNumber = 1;
-
-                if (lastClaim != null)
-                {
-                    var parts = lastClaim.ClaimNo.Split('-');
-
-                    if (parts.Length >= 2 &&
-                        int.TryParse(parts[1], out int lastNumber))
-                    {
-                        nextNumber = lastNumber + 1;
-                    }
-                }
-
-                var today = DateTime.Now;
-
-                string financialYear;
-
-                if (today.Month >= 4)
-                {
-                    financialYear = $"{today.Year}/{today.Year + 1}";
+                    claim.LastModifiedAt = DateTime.Now;
                 }
                 else
                 {
-                    financialYear = $"{today.Year - 1}/{today.Year}";
+                    // First save for this month
+                    claim = new ClaimMaster
+                    {
+                        EmployeeId = dto.EmployeeId,
+                        ClaimMonth = dto.ClaimMonth,
+                        ClaimYear = dto.ClaimMonth.Year,
+                        CreatedAt = DateTime.Now,
+                        LastModifiedAt = DateTime.Now,
+                        TotalAmount = totalAmount,
+                        IsActive = true,
+
+                        // CreateClaim API always saves as Draft
+                        Status = "Draft",
+
+                        SubmittedAt = null,
+                        CurrentApprovalLevel = null
+                    };
+
+                    _context.ClaimMasters.Add(claim);
+
+                    await _context.SaveChangesAsync();
+
+                    // Generate claim number only once
+                    claim.ClaimNo =
+                        await GenerateClaimNumber("Local Expense Claim");
+
+                    await _context.SaveChangesAsync();
                 }
 
-                claim.ClaimNo = $"LEC-{claim.ClaimId:D4}-{financialYear}";
-
-                await _context.SaveChangesAsync();
-
+                // ============================================
+                // EXISTING APPROVAL FLOW STARTS HERE
+                // DON'T CHANGE THIS SECTION
+                // ============================================
 
                 if (isSubmit)
                 {
                     var employee = await _context.EmployeeMasters
-                        .FirstOrDefaultAsync(x => x.EmpId == dto.EmployeeId);
+                        .FirstOrDefaultAsync(x =>
+                            x.EmpId == dto.EmployeeId);
 
                     if (employee == null)
                     {
@@ -1128,32 +1616,78 @@ Local Expense Claim Portal
                 // ===========================
                 // Save All Entries
                 // ===========================
+                var savedTravelIds = new List<object>();
 
                 foreach (var entry in dto.ClaimEntries)
                 {
                     // ===========================
-                    // Get Current Vehicle Rate
+                    // GET VEHICLE RATE
                     // ===========================
 
-                    var currentRate = await _context.VehicleRateMasters
-                        .Where(x =>
-                            x.VehicleTypeId == entry.VehicleTypeId &&
-                            x.FuelTypeId == entry.FuelTypeId &&
-                            x.IsActive)
-                        .OrderByDescending(x => x.ValidFrom)
-                        .FirstOrDefaultAsync();
+                    decimal? appliedRatePerKm = null;
+                    decimal travelAmount = 0;
 
-                    if (currentRate == null)
+                    // Bike = 2
+                    // Car = 3
+                    // Rate required only for Bike and Car
+                    if (entry.VehicleTypeId == 2 || entry.VehicleTypeId == 3)
                     {
-                        return BadRequest(new
+                        // FuelTypeId mandatory for Bike / Car
+                        if (!entry.FuelTypeId.HasValue || entry.FuelTypeId.Value <= 0)
                         {
-                            success = false,
-                            message = $"Rate not configured for VehicleType {entry.VehicleTypeId} and FuelType {entry.FuelTypeId}"
-                        });
+                            return BadRequest(new
+                            {
+                                success = false,
+                                message = $"Fuel Type is required for VehicleTypeId {entry.VehicleTypeId}."
+                            });
+                        }
+
+                        var currentRate = await _context.VehicleRateMasters
+                            .Where(x =>
+                                x.VehicleTypeId == entry.VehicleTypeId &&
+                                x.FuelTypeId == entry.FuelTypeId.Value &&
+                                x.IsActive)
+                            .OrderByDescending(x => x.ValidFrom)
+                            .FirstOrDefaultAsync();
+
+                        if (currentRate == null)
+                        {
+                            return BadRequest(new
+                            {
+                                success = false,
+                                message =
+                                    $"Vehicle rate is not configured for VehicleTypeId {entry.VehicleTypeId} " +
+                                    $"and FuelTypeId {entry.FuelTypeId.Value}."
+                            });
+                        }
+
+                        // ===========================
+                        // RATE USED FOR THIS CLAIM
+                        // ===========================
+
+                        appliedRatePerKm = currentRate.AmountPerKm;
+
+                        // ===========================
+                        // CALCULATE TRAVEL AMOUNT
+                        // ===========================
+
+                        travelAmount =
+                            entry.KmRun * currentRate.AmountPerKm?? 0;
+                    }
+                    else
+                    {
+                        // Bus / Train / other vehicles
+                        // No vehicle rate required
+
+                        appliedRatePerKm = null;
+
+                        // If manually entered amount is allowed
+                        travelAmount = entry.TravelAmount;
                     }
 
+
                     // ===========================
-                    // Travel
+                    // SAVE TRAVEL
                     // ===========================
 
                     var travel = new ClaimTravel
@@ -1161,68 +1695,135 @@ Local Expense Claim Portal
                         ClaimId = claim.ClaimId,
 
                         VehicleTypeId = entry.VehicleTypeId,
-                        FuelTypeId = entry.FuelTypeId,
-                        VehicleDetailId = entry.VehicleDetailId,
-                        VehicleNumber = entry.VehicleNumber,
 
-                        // 👇 Snapshot of rate at claim creation time
-                        AppliedRatePerKm = currentRate.AmountPerKm,
+                        FuelTypeId =
+                            entry.FuelTypeId.HasValue &&
+                            entry.FuelTypeId.Value > 0
+                                ? entry.FuelTypeId.Value
+                                : null,
+
+                        VehicleDetailId =
+                            entry.VehicleDetailId.HasValue &&
+                            entry.VehicleDetailId.Value > 0
+                                ? entry.VehicleDetailId.Value
+                                : null,
+
+                        VehicleNumber =
+                            string.IsNullOrWhiteSpace(entry.VehicleNumber)
+                                ? null
+                                : entry.VehicleNumber,
 
                         TravelDate = entry.TravelDate,
+
                         Purpose = entry.Purpose,
+
                         FromLocation = entry.FromLocation,
+
                         ToLocation = entry.ToLocation,
-                        BusorTrainInvoiceNumber = entry.BusorTrainInvoiceNumber,
-                        TaxiInvoiceNumber = entry.TaxiInvoiceNumber,
+
                         KmRun = entry.KmRun,
-                        Amount = entry.TravelAmount,
-                        Remarks = entry.TravelRemarks,
+
+                        // ⭐ CALCULATED AMOUNT
+                        Amount = travelAmount,
+
+                        // ⭐ RATE USED
+                        AppliedRatePerKm = appliedRatePerKm,
+
                         IsActive = true
                     };
 
                     _context.ClaimTravels.Add(travel);
 
                     await _context.SaveChangesAsync();
-   
 
-                var food = new ClaimFood
-                    {
-                        TravelId = travel.TravelId,
-
-                        ClaimId = claim.ClaimId,
-                        FoodDate = entry.TravelDate,
-                        Breakfast = entry.Breakfast,
-                        Lunch = entry.Lunch,
-                        Dinner = entry.Dinner,
-                        Amount = entry.FoodAmount,
-                        BreakfastInvoiceNumber = entry.BreakfastInvoiceNumber,
-                        LunchInvoiceNumber = entry.LunchInvoiceNumber,
-                        DinnerInvoiceNumber = entry.DinnerInvoiceNumber,
-                        DocumentPath = string.Empty
-                    };
-
-                    _context.ClaimFoods.Add(food);
+                    // Save so TravelId gets generated
                     await _context.SaveChangesAsync();
 
-                    var expense = new ClaimExpense
+                    
+
+                    savedTravelIds.Add(new
                     {
-                        ClaimId = claim.ClaimId,
-                        TravelId = travel.TravelId,
+                        travelId = travel.TravelId,
+                        travelDate = travel.TravelDate
+                    });
 
-                        TollAmount = entry.TollAmount,
-                        AutoAmount = entry.AutoAmount,
-                        OtherAmount = entry.OtherAmount,
 
-                        ExpenseDate = entry.TravelDate,
-                        Remarks = entry.ExpenseRemarks,
 
-                        
-                        created_at = DateTime.Now,
-                        IsActive = true
-                    };
+                    // ============================================
+                    // FOOD DETAILS
+                    // OPTIONAL
+                    // ============================================
 
-                    _context.ClaimExpenses.Add(expense);
-                    await _context.SaveChangesAsync();
+                    if (entry.FoodTypeId.HasValue &&
+                        entry.FoodTypeId.Value > 0 &&
+                        entry.FoodAmount > 0)
+                    {
+                        var food = new ClaimFood
+                        {
+                            TravelId = travel.TravelId,
+
+                            ClaimId = claim.ClaimId,
+
+                            FoodDate = entry.TravelDate,
+
+                            FoodTypeId = entry.FoodTypeId.Value,
+
+                            Amount = entry.FoodAmount,
+
+                            IsActive = true
+                        };
+
+                        _context.ClaimFoods.Add(food);
+
+                        await _context.SaveChangesAsync();
+                    }
+
+
+                    // ============================================
+                    // MULTIPLE EXPENSES
+                    // ============================================
+
+                    if (entry.Expenses != null && entry.Expenses.Any())
+                    {
+                        foreach (var expenseItem in entry.Expenses)
+                        {
+                            // Ignore empty expense
+                            if (string.IsNullOrWhiteSpace(expenseItem.ExpenseType) ||
+                                expenseItem.ExpenseAmount <= 0)
+                            {
+                                continue;
+                            }
+
+                            var expense = new ClaimExpense
+                            {
+                                ClaimId = claim.ClaimId,
+
+                                // IMPORTANT
+                                // Expense belongs to this Travel
+                                TravelId = travel.TravelId,
+
+                                ExpenseDate = entry.TravelDate,
+
+                                ExpenseType = expenseItem.ExpenseType,
+
+                                InvoiceNo = expenseItem.InvoiceNo,
+
+                                Description = expenseItem.Description,
+
+                                Purpose = expenseItem.ExpensePurpose,
+
+                                Amount = expenseItem.ExpenseAmount,
+
+                                created_at = DateTime.Now,
+
+                                IsActive = true
+                            };
+
+                            _context.ClaimExpenses.Add(expense);
+                        }
+
+                        await _context.SaveChangesAsync();
+                    }
                 }
 
                 await transaction.CommitAsync();
@@ -1239,7 +1840,8 @@ Local Expense Claim Portal
                         claim.ClaimId,
                         claim.ClaimNo,
                         claim.Status,
-                        claim.TotalAmount
+                        claim.TotalAmount,
+                        claimEntries = savedTravelIds
                     }
                 });
             }
@@ -1258,8 +1860,8 @@ Local Expense Claim Portal
 
 
 
-     
 
+        [Authorize]
         [HttpGet("my-drafts/{empId}")]
         public async Task<IActionResult> GetMyDrafts(int empId)
         {
@@ -1282,6 +1884,7 @@ Local Expense Claim Portal
                     })
                     .ToListAsync();
 
+
                 return Ok(new
                 {
                     success = true,
@@ -1297,8 +1900,12 @@ Local Expense Claim Portal
                 });
             }
         }
-        [HttpDelete("delete-draft/{claimId}")]
-        public async Task<IActionResult> DeleteDraft(int claimId)
+
+        [Authorize]
+        [HttpDelete("delete-draft-entry/{claimId}/{travelId}")]
+        public async Task<IActionResult> DeleteDraftEntry(
+     int claimId,
+     int travelId)
         {
             await using var transaction =
                 await _context.Database.BeginTransactionAsync();
@@ -1313,7 +1920,7 @@ Local Expense Claim Portal
                     .FirstOrDefaultAsync(x =>
                         x.ClaimId == claimId &&
                         x.Status == "Draft" &&
-                        x.IsActive == true);
+                        x.IsActive);
 
                 if (claim == null)
                 {
@@ -1325,31 +1932,40 @@ Local Expense Claim Portal
                 }
 
                 // ==================================
-                // Soft Delete Claim Master
+                // Get ONLY Selected Travel Entry
                 // ==================================
 
-                claim.IsActive = false;
-                claim.LastModifiedAt = DateTime.Now;
+                var travel = await _context.ClaimTravels
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == claimId &&
+                        x.TravelId == travelId &&
+                        x.IsActive);
 
-                // ==================================
-                // Soft Delete Travels
-                // ==================================
-
-                var travels = await _context.ClaimTravels
-                    .Where(x => x.ClaimId == claimId)
-                    .ToListAsync();
-
-                foreach (var travel in travels)
+                if (travel == null)
                 {
-                    travel.IsActive = false;
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Draft travel entry not found."
+                    });
                 }
 
                 // ==================================
-                // Soft Delete Foods
+                // Soft Delete Selected Travel
+                // ==================================
+
+                travel.IsActive = false;
+
+                // ==================================
+                // Soft Delete Food
+                // ONLY for this Travel Entry
                 // ==================================
 
                 var foods = await _context.ClaimFoods
-                    .Where(x => x.ClaimId == claimId)
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.TravelId == travelId &&
+                        x.IsActive)
                     .ToListAsync();
 
                 foreach (var food in foods)
@@ -1359,16 +1975,73 @@ Local Expense Claim Portal
 
                 // ==================================
                 // Soft Delete Expenses
+                // ONLY for this Travel Entry
                 // ==================================
 
                 var expenses = await _context.ClaimExpenses
-                    .Where(x => x.ClaimId == claimId)
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.TravelId == travelId &&
+                        x.IsActive)
                     .ToListAsync();
 
                 foreach (var expense in expenses)
                 {
                     expense.IsActive = false;
                 }
+
+                // ==================================
+                // Soft Delete Documents
+                // ONLY for this Travel Entry
+                // ==================================
+
+                var documents = await _context.ClaimDocuments
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.ReferenceId == travelId &&
+                        x.IsActive)
+                    .ToListAsync();
+
+                foreach (var document in documents)
+                {
+                    document.IsActive = false;
+                }
+
+                // ==================================
+                // Recalculate Claim Total
+                // ==================================
+
+                var remainingTravels = await _context.ClaimTravels
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive)
+                    .ToListAsync();
+
+                var remainingFoods = await _context.ClaimFoods
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive)
+                    .ToListAsync();
+
+                var remainingExpenses = await _context.ClaimExpenses
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive)
+                    .ToListAsync();
+
+                decimal totalAmount = 0;
+
+                totalAmount += remainingTravels
+                    .Sum(x => x.Amount ?? 0m);
+
+                totalAmount += remainingFoods
+                    .Sum(x => x.Amount);
+
+                totalAmount += remainingExpenses
+                    .Sum(x => x.Amount ?? 0m);
+
+                claim.TotalAmount = totalAmount;
+                claim.LastModifiedAt = DateTime.Now;
 
                 // ==================================
                 // Save
@@ -1381,7 +2054,13 @@ Local Expense Claim Portal
                 return Ok(new
                 {
                     success = true,
-                    message = "Draft deleted successfully."
+                    message = "Draft entry deleted successfully.",
+                    data = new
+                    {
+                        claimId = claimId,
+                        deletedTravelId = travelId,
+                        remainingClaimAmount = totalAmount
+                    }
                 });
             }
             catch (Exception ex)
@@ -1391,12 +2070,12 @@ Local Expense Claim Portal
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Error while deleting draft.",
+                    message = "Error while deleting draft entry.",
                     error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
-
+        [Authorize]
         [HttpGet("draft-details/{claimId}")]
         public async Task<IActionResult> GetDraftDetails(int claimId)
         {
@@ -1404,17 +2083,15 @@ Local Expense Claim Portal
             {
                 var baseUrl = $"{Request.Scheme}://{Request.Host}";
 
-                // ===========================
-                // Claim Master
-                // ===========================
+                // =====================================================
+                // CLAIM MASTER
+                // =====================================================
 
                 var claim = await _context.ClaimMasters
                     .FirstOrDefaultAsync(x =>
                         x.ClaimId == claimId &&
                         x.Status == "Draft" &&
-
-                        x.IsActive == true);
-
+                        x.IsActive);
 
                 if (claim == null)
                 {
@@ -1425,9 +2102,9 @@ Local Expense Claim Portal
                     });
                 }
 
-                // ===========================
-                // Travels
-                // ===========================
+                // =====================================================
+                // TRAVELS
+                // =====================================================
 
                 var travels = await _context.ClaimTravels
                     .Where(x =>
@@ -1436,9 +2113,9 @@ Local Expense Claim Portal
                     .OrderBy(x => x.TravelId)
                     .ToListAsync();
 
-                // ===========================
-                // Documents
-                // ===========================
+                // =====================================================
+                // DOCUMENTS
+                // =====================================================
 
                 var documents = await _context.ClaimDocuments
                     .Where(x =>
@@ -1446,96 +2123,231 @@ Local Expense Claim Portal
                         x.IsActive)
                     .ToListAsync();
 
-                // ===========================
-                // Build Response
-                // ===========================
+                // =====================================================
+                // CLAIM ENTRIES
+                // =====================================================
 
                 var claimEntries = new List<object>();
 
+                // ⭐ GRAND TOTAL FOR THIS DRAFT
+                decimal grandTotalAmount = 0;
+
                 foreach (var travel in travels)
                 {
-                    var food = await _context.ClaimFoods
-                        .FirstOrDefaultAsync(x =>
-                            x.ClaimId == claimId &&
-                            x.TravelId == travel.TravelId);
+                    // =================================================
+                    // FOOD
+                    // =================================================
 
-                    var expense = await _context.ClaimExpenses
+                    var food = await _context.ClaimFoods
                         .FirstOrDefaultAsync(x =>
                             x.ClaimId == claimId &&
                             x.TravelId == travel.TravelId &&
                             x.IsActive);
 
+                    // =================================================
+                    // ALL EXPENSES FOR THIS TRAVEL
+                    // =================================================
+
+                    var expenses = await _context.ClaimExpenses
+                        .Where(x =>
+                            x.ClaimId == claimId &&
+                            x.TravelId == travel.TravelId &&
+                            x.IsActive)
+                        .ToListAsync();
+
+                    // =================================================
+                    // VEHICLE NAME
+                    // =================================================
+
+                    var vehicleName = await _context.VehicleMaster
+                        .Where(v => v.VehicleId == travel.VehicleTypeId)
+                        .Select(v => v.VehicleName)
+                        .FirstOrDefaultAsync();
+
+                    // =================================================
+                    // EXPENSE LIST
+                    // =================================================
+
+                    var expenseList = expenses
+                        .Select(e => new
+                        {
+                            expenseId = e.ExpenseId,
+                            expenseType = e.ExpenseType,
+                            invoiceNo = e.InvoiceNo,
+                            description = e.Description,
+                            expensePurpose = e.Purpose,
+                            expenseAmount = e.Amount ?? 0
+                        })
+                        .ToList();
+
+                    // =================================================
+                    // TOTAL OTHER EXPENSE
+                    // =================================================
+
+                    decimal otherAmount = expenses
+                        .Where(e =>
+                            !string.Equals(
+                                e.ExpenseType,
+                                "Toll",
+                                StringComparison.OrdinalIgnoreCase))
+                        .Sum(e => e.Amount ?? 0);
+
+                    // =================================================
+                    // TOTAL TOLL
+                    // =================================================
+
+                    decimal tollAmount = expenses
+                        .Where(e =>
+                            string.Equals(
+                                e.ExpenseType,
+                                "Toll",
+                                StringComparison.OrdinalIgnoreCase))
+                        .Sum(e => e.Amount ?? 0);
+
+                    // =================================================
+                    // TRAVEL AMOUNT
+                    // =================================================
+
+                    decimal travelAmount = travel.Amount ?? 0;
+
+                    // =================================================
+                    // FOOD AMOUNT
+                    // =================================================
+
+                    decimal foodAmount = food?.Amount ?? 0;
+
+                    // =================================================
+                    // ENTRY TOTAL
+                    // Travel + Food + Toll + Others
+                    // =================================================
+
+                    decimal entryTotalAmount =
+                        travelAmount +
+                        foodAmount +
+                        tollAmount +
+                        otherAmount;
+
+                    // ⭐ ADD THIS ENTRY TOTAL TO GRAND TOTAL
+                    grandTotalAmount += entryTotalAmount;
+
+                    // =================================================
+                    // DOCUMENTS
+                    // =================================================
+
+                    var travelDocuments = documents
+                        .Where(d => d.ReferenceId == travel.TravelId)
+                        .Select(d => new
+                        {
+                            d.DocumentId,
+                            d.ReferenceId,
+                            d.ModuleType,
+                            d.DocumentType,
+
+                            FilePath = string.IsNullOrEmpty(d.FilePath)
+                                ? ""
+                                : $"{baseUrl}/{d.FilePath.Replace("\\", "/")}",
+
+                            d.OriginalFileName
+                        })
+                        .ToList();
+
+                    // =================================================
+                    // ADD CLAIM ENTRY
+                    // =================================================
+
                     claimEntries.Add(new
                     {
-                        travel.TravelId,
+                        // -----------------------------
+                        // TRAVEL
+                        // -----------------------------
 
-                        travel.VehicleTypeId,
-                        travel.FuelTypeId,
-                        travel.VehicleDetailId,
-                        travel.VehicleNumber,
-                        AppliedRatePerKm = travel.AppliedRatePerKm,
-                        travel.TravelDate,
-                        travel.Purpose,
-                        travel.FromLocation,
-                        travel.ToLocation,
-                        travel.BusorTrainInvoiceNumber,
-                        travel.TaxiInvoiceNumber,
-                        travel.KmRun,
+                        travelId = travel.TravelId,
 
-                        TravelAmount = travel.Amount,
-                        TravelRemarks = travel.Remarks,
+                        vehicleTypeId = travel.VehicleTypeId,
 
-                        Breakfast = food?.Breakfast ?? 0,
-                        Lunch = food?.Lunch ?? 0,
-                        Dinner = food?.Dinner ?? 0,
-                        FoodAmount = food?.Amount ?? 0,
-                        BreakfastInvoiceNumber = food.BreakfastInvoiceNumber,
-                        LunchInvoiceNumber = food.LunchInvoiceNumber,
-                        DinnerInvoiceNumber = food.DinnerInvoiceNumber,
+                        vehicleName = vehicleName,
 
-                        TollAmount = expense?.TollAmount ?? 0,
-                        AutoAmount = expense?.AutoAmount ?? 0,
-                        OtherAmount = expense?.OtherAmount ?? 0,
-                        ExpenseRemarks = expense?.Remarks ?? "",
+                        fuelTypeId = travel.FuelTypeId,
 
-                        Documents = documents
-                            .Where(d => d.ReferenceId == travel.TravelId)
-                            .Select(d => new
-                            {
-                                d.DocumentId,
-                                d.ReferenceId,
-                                d.ModuleType,
-                                d.DocumentType,
+                        vehicleDetailId = travel.VehicleDetailId,
 
-                                FilePath = string.IsNullOrEmpty(d.FilePath)
-                                    ? ""
-                                    : $"{baseUrl}/{d.FilePath.Replace("\\", "/")}",
+                        vehicleNumber = travel.VehicleNumber,
 
-                                d.OriginalFileName
-                            })
-                            .ToList()
+                        appliedRatePerKm = travel.AppliedRatePerKm,
+
+                        travelDate = travel.TravelDate,
+
+                        purpose = travel.Purpose,
+
+                        fromLocation = travel.FromLocation,
+
+                        toLocation = travel.ToLocation,
+
+                        kmRun = travel.KmRun,
+
+                        travelAmount = travelAmount,
+
+                        // -----------------------------
+                        // FOOD
+                        // -----------------------------
+
+                        foodTypeId = food?.FoodTypeId,
+
+                        foodAmount = foodAmount,
+
+                        // -----------------------------
+                        // EXPENSE TOTALS
+                        // -----------------------------
+
+                        tollAmount = tollAmount,
+
+                        otherAmount = otherAmount,
+
+                        // -----------------------------
+                        // ENTRY TOTAL
+                        // -----------------------------
+
+                        totalAmount = entryTotalAmount,
+
+                        // -----------------------------
+                        // ALL EXPENSES
+                        // -----------------------------
+
+                        expenses = expenseList,
+
+                        // -----------------------------
+                        // DOCUMENTS
+                        // -----------------------------
+
+                        documents = travelDocuments
                     });
                 }
 
-                // ===========================
-                // Response
-                // ===========================
+                // =====================================================
+                // FINAL RESPONSE
+                // =====================================================
 
                 return Ok(new
-                {                                                                                                                                                                                                                                                                 
+                {
                     success = true,
+
                     data = new
                     {
                         claimId = claim.ClaimId,
+
                         claimNo = claim.ClaimNo,
+
                         employeeId = claim.EmployeeId,
+
                         claimMonth = claim.ClaimMonth,
-                        totalAmount = claim.TotalAmount,
+
+                        // ⭐ DO NOT USE claim.TotalAmount
+                        // Use calculated draft total
+                        totalAmount = grandTotalAmount,
+
                         status = claim.Status,
-                        remarks = claim.Remarks,
 
-
-                        claimEntries
+                        claimEntries = claimEntries
                     }
                 });
             }
@@ -1545,6 +2357,7 @@ Local Expense Claim Portal
                 {
                     success = false,
                     message = "Error while fetching draft details.",
+
                     error = ex.InnerException?.Message ?? ex.Message
                 });
             }
@@ -1742,14 +2555,18 @@ Local Expense Claim Portal
         [Authorize]
         [HttpPut("update-draft/{claimId}")]
         public async Task<IActionResult> UpdateDraft(
-    int claimId,
-    [FromBody] CreateClaimDto dto)
+      int claimId,
+      [FromBody] CreateClaimDto dto)
         {
             await using var transaction =
                 await _context.Database.BeginTransactionAsync();
 
             try
             {
+                // ============================================================
+                // 1. BASIC VALIDATION
+                // ============================================================
+
                 if (dto == null)
                 {
                     return BadRequest(new
@@ -1759,13 +2576,33 @@ Local Expense Claim Portal
                     });
                 }
 
-                //------------------------------------------
-                // Login Employee
-                //------------------------------------------
+                if (dto.ClaimEntries == null || !dto.ClaimEntries.Any())
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "At least one claim entry is required."
+                    });
+                }
+
+                if (claimId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Invalid claim ID."
+                    });
+                }
+
+
+                // ============================================================
+                // 2. GET LOGIN EMPLOYEE FROM JWT
+                // ============================================================
 
                 var empIdClaim = User.FindFirst("EmpId")?.Value;
 
-                if (string.IsNullOrEmpty(empIdClaim))
+                if (string.IsNullOrWhiteSpace(empIdClaim) ||
+                    !int.TryParse(empIdClaim, out int loginEmpId))
                 {
                     return Unauthorized(new
                     {
@@ -1774,11 +2611,11 @@ Local Expense Claim Portal
                     });
                 }
 
-                int loginEmpId = int.Parse(empIdClaim);
 
-                //------------------------------------------
-                // Claim
-                //------------------------------------------
+                // ============================================================
+                // 3. GET CLAIM
+                // Draft / Rejected only can be edited
+                // ============================================================
 
                 var claim = await _context.ClaimMasters
                     .FirstOrDefaultAsync(x =>
@@ -1791,13 +2628,14 @@ Local Expense Claim Portal
                     return NotFound(new
                     {
                         success = false,
-                        message = "Claim not found."
+                        message = "Draft claim not found."
                     });
                 }
 
-                //------------------------------------------
-                // Owner Validation
-                //------------------------------------------
+
+                // ============================================================
+                // 4. OWNER VALIDATION
+                // ============================================================
 
                 if (claim.EmployeeId != loginEmpId)
                 {
@@ -1808,66 +2646,198 @@ Local Expense Claim Portal
                     });
                 }
 
-                //------------------------------------------
-                // Total Amount
-                //------------------------------------------
 
-                decimal totalAmount =
-                    dto.ClaimEntries.Sum(x =>
-                        x.TravelAmount +
-                        x.FoodAmount +
-                        (x.TollAmount ?? 0) +
-                        (x.AutoAmount ?? 0) +
-                        (x.OtherAmount ?? 0));
+                // ============================================================
+                // 5. CLAIM MONTH VALIDATION
+                // ============================================================
 
-                //------------------------------------------
-                // Claim Master Update
-                //------------------------------------------
+                if (dto.ClaimMonth == default)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Claim month is required."
+                    });
+                }
 
-                claim.EmployeeId = dto.EmployeeId;
-                claim.ClaimMonth = dto.ClaimMonth;
-                claim.ClaimYear = dto.ClaimMonth.Year;
-                claim.TotalAmount = totalAmount;
-                claim.Remarks = dto.ClaimEntries.FirstOrDefault()?.Remarks;
-                claim.LastModifiedAt = DateTime.Now;
 
-                _context.Entry(claim).State = EntityState.Modified;
+                // ============================================================
+                // 6. TRACK INCOMING TRAVEL IDs
+                //
+                // Existing TravelId -> update
+                // TravelId = 0 -> new travel
+                // ============================================================
 
-                await _context.SaveChangesAsync();
+                var incomingTravelIds = new HashSet<int>();
 
-                //------------------------------------------------
-                // PART-2
-                // Existing Travel Update + New Travel Insert
-                //------------------------------------------------
-                // ==================================
-                // Travel Update / Insert
-                // ==================================
+
+                // ============================================================
+                // 7. CALCULATED TOTAL
+                // ============================================================
+
+                decimal calculatedTotalAmount = 0;
+
+
+                // ============================================================
+                // 8. PROCESS EACH TRAVEL ENTRY
+                // ============================================================
 
                 foreach (var entry in dto.ClaimEntries)
                 {
                     ClaimTravel travel;
 
-                    //=========================================
-                    // EXISTING TRAVEL
-                    //=========================================
-                    var currentRate = await _context.VehicleRateMasters
-    .Where(x =>
-        x.VehicleTypeId == entry.VehicleTypeId &&
-        x.FuelTypeId == entry.FuelTypeId &&
-        x.IsActive)
-    .OrderByDescending(x => x.ValidFrom)
-    .FirstOrDefaultAsync();
 
-                    if (currentRate == null)
+                    // ========================================================
+                    // 8.1 TRAVEL VALIDATION
+                    // ========================================================
+
+                    if (entry.TravelDate == default)
                     {
                         return BadRequest(new
                         {
                             success = false,
-                            message = "Vehicle rate not configured."
+                            message = "Travel date is required."
                         });
                     }
 
-                    if (entry.TravelId.HasValue && entry.TravelId.Value > 0)
+                    if (string.IsNullOrWhiteSpace(entry.Purpose))
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "Travel purpose is required."
+                        });
+                    }
+
+                    if (string.IsNullOrWhiteSpace(entry.FromLocation) ||
+                        string.IsNullOrWhiteSpace(entry.ToLocation))
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "From and To locations are required."
+                        });
+                    }
+
+                    // ========================================================
+                    // 8.2 VEHICLE RATE + TRAVEL AMOUNT
+                    // ========================================================
+
+                    decimal? appliedRatePerKm = null;
+                    decimal travelAmount = 0;
+
+
+                    // ========================================================
+                    // BIKE / CAR
+                    // VehicleTypeId 2 = Bike
+                    // VehicleTypeId 3 = Car
+                    // ========================================================
+
+                    if (entry.VehicleTypeId == 2 ||
+                        entry.VehicleTypeId == 3)
+                    {
+                        // ----------------------------------------------------
+                        // DISTANCE IS OPTIONAL
+                        // ----------------------------------------------------
+
+                        if (entry.KmRun > 0)
+                        {
+                            // ------------------------------------------------
+                            // Distance entered
+                            // Fuel Type required only for rate calculation
+                            // ------------------------------------------------
+
+                            if (!entry.FuelTypeId.HasValue ||
+      entry.FuelTypeId.Value <= 0)
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message = "Fuel Type is required when distance is entered."
+                                });
+                            }
+
+
+                            // ------------------------------------------------
+                            // GET VEHICLE RATE
+                            // ------------------------------------------------
+
+                            var currentRate = await _context.VehicleRateMasters
+                                .Where(x =>
+                                    x.VehicleTypeId == entry.VehicleTypeId &&
+                                  x.FuelTypeId == entry.FuelTypeId.Value &&
+                                    x.IsActive)
+                                .OrderByDescending(x => x.ValidFrom)
+                                .FirstOrDefaultAsync();
+
+
+                            // ------------------------------------------------
+                            // RATE NOT FOUND
+                            // ------------------------------------------------
+
+                            if (currentRate == null)
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message = "Vehicle rate is not configured."
+                                });
+                            }
+
+
+                            // ------------------------------------------------
+                            // RATE SNAPSHOT
+                            // ------------------------------------------------
+
+                            appliedRatePerKm =
+                                Convert.ToDecimal(currentRate.AmountPerKm);
+
+
+                            // ------------------------------------------------
+                            // CALCULATE TRAVEL AMOUNT
+                            // KM × RATE
+                            // ------------------------------------------------
+
+                            travelAmount =
+                                Convert.ToDecimal(entry.KmRun) *
+                                Convert.ToDecimal(currentRate.AmountPerKm);
+                        }
+                        else
+                        {
+                            // ------------------------------------------------
+                            // NO DISTANCE ENTERED
+                            // No error
+                            // No rate calculation
+                            // Amount = 0
+                            // ------------------------------------------------
+
+                            appliedRatePerKm = null;
+
+                            travelAmount = 0;
+                        }
+                    }
+
+
+                    // ========================================================
+                    // BUS / TAXI / OTHER VEHICLES
+                    // User-entered amount
+                    // ========================================================
+
+                    else
+                    {
+                        appliedRatePerKm = null;
+
+                        travelAmount =
+        Convert.ToDecimal(entry.TravelAmount);
+                    }
+
+
+                    // ========================================================
+                    // 8.3 EXISTING TRAVEL -> UPDATE
+                    // ========================================================
+
+                    if (entry.TravelId.HasValue &&
+                        entry.TravelId.Value > 0)
                     {
                         travel = await _context.ClaimTravels
                             .FirstOrDefaultAsync(x =>
@@ -1877,96 +2847,80 @@ Local Expense Claim Portal
 
                         if (travel == null)
                         {
-                            continue;
+                            return BadRequest(new
+                            {
+                                success = false,
+                                message =
+                                    $"Travel entry {entry.TravelId.Value} not found for this claim."
+                            });
                         }
 
-                        travel.VehicleTypeId = entry.VehicleTypeId;
-                        travel.FuelTypeId = entry.FuelTypeId;
-                        travel.VehicleDetailId = entry.VehicleDetailId;
-                        travel.VehicleNumber = entry.VehicleNumber;
 
-                        travel.TravelDate = entry.TravelDate;
-                        travel.Purpose = entry.Purpose;
-                        travel.FromLocation = entry.FromLocation;
-                        travel.ToLocation = entry.ToLocation;
-                        travel.KmRun = entry.KmRun;
-                        travel.Amount = entry.TravelAmount;
-                        travel.Remarks = entry.TravelRemarks;
-                        travel.AppliedRatePerKm = currentRate.AmountPerKm;
+                        // --------------------------------------------
+                        // Vehicle
+                        // --------------------------------------------
 
-                        travel.BusorTrainInvoiceNumber = entry.BusorTrainInvoiceNumber;
-                        travel.TaxiInvoiceNumber = entry.TaxiInvoiceNumber;
+                        travel.VehicleTypeId =
+                            entry.VehicleTypeId;
+
+                        travel.FuelTypeId =
+                            entry.FuelTypeId;
+
+                        travel.VehicleDetailId =
+                            entry.VehicleDetailId;
+
+                        travel.VehicleNumber =
+                            entry.VehicleNumber;
+
+
+                        // --------------------------------------------
+                        // Travel Details
+                        // --------------------------------------------
+
+                        travel.TravelDate =
+                            entry.TravelDate;
+
+                        travel.Purpose =
+                            entry.Purpose;
+
+                        travel.FromLocation =
+                            entry.FromLocation;
+
+                        travel.ToLocation =
+                            entry.ToLocation;
+
+
+                        // --------------------------------------------
+                        // KM
+                        // --------------------------------------------
+
+                        travel.KmRun =
+                            entry.KmRun;
+
+
+                        // --------------------------------------------
+                        // Amount
+                        // --------------------------------------------
+
+                        travel.Amount =
+                            travelAmount;
+
+
+                        // --------------------------------------------
+                        // Rate Snapshot
+                        // --------------------------------------------
+
+                        travel.AppliedRatePerKm =
+                            appliedRatePerKm;
 
 
                         _context.ClaimTravels.Update(travel);
-
-                        //------------------------------------
-                        // FOOD
-                        //------------------------------------
-
-                        var food = await _context.ClaimFoods
-                            .FirstOrDefaultAsync(x =>
-                                x.ClaimId == claimId &&
-                                x.TravelId == travel.TravelId);
-
-                        if (food != null)
-                        {
-                            food.FoodDate = entry.TravelDate;
-                            food.Breakfast = entry.Breakfast;
-                            food.Lunch = entry.Lunch;
-                            food.Dinner = entry.Dinner;
-                            food.Amount = entry.FoodAmount;
-                            food.BreakfastInvoiceNumber = entry.BreakfastInvoiceNumber;
-                            food.LunchInvoiceNumber = entry.LunchInvoiceNumber;
-                            food.DinnerInvoiceNumber = entry.DinnerInvoiceNumber;
-                            _context.ClaimFoods.Update(food);
-                        }
-
-                        //------------------------------------
-                        // EXPENSE
-                        //------------------------------------
-
-                        var expense = await _context.ClaimExpenses
-                            .FirstOrDefaultAsync(x =>
-                                x.ClaimId == claimId &&
-                                x.TravelId == travel.TravelId &&
-                                x.IsActive);
-
-                        if (expense != null)
-                        {
-                            expense.TollAmount = entry.TollAmount;
-                            expense.AutoAmount = entry.AutoAmount;
-                            expense.OtherAmount = entry.OtherAmount;
-
-                            expense.ExpenseDate = entry.TravelDate;
-                            expense.Remarks = entry.ExpenseRemarks;
-
-                            _context.ClaimExpenses.Update(expense);
-                        }
-                        else
-                        {
-                            expense = new ClaimExpense
-                            {
-                                ClaimId = claimId,
-                                TravelId = travel.TravelId,
-
-                                TollAmount = entry.TollAmount,
-                                AutoAmount = entry.AutoAmount,
-                                OtherAmount = entry.OtherAmount,
-
-                                ExpenseDate = entry.TravelDate,
-                                Remarks = entry.ExpenseRemarks,
-                                created_at = DateTime.Now,
-                                IsActive = true
-                            };
-
-                            _context.ClaimExpenses.Add(expense);
-                        }
                     }
 
-                    //=========================================
-                    // NEW TRAVEL
-                    //=========================================
+
+                    // ========================================================
+                    // 8.5 NEW TRAVEL -> INSERT
+                    // ========================================================
 
                     else
                     {
@@ -1974,152 +2928,512 @@ Local Expense Claim Portal
                         {
                             ClaimId = claimId,
 
-                            VehicleTypeId = entry.VehicleTypeId,
-                            FuelTypeId = entry.FuelTypeId,
-                            VehicleDetailId = entry.VehicleDetailId,
-                            VehicleNumber = entry.VehicleNumber,
 
-                            TravelDate = entry.TravelDate,
-                            Purpose = entry.Purpose,
-                            FromLocation = entry.FromLocation,
-                            ToLocation = entry.ToLocation,
-                            KmRun = entry.KmRun,
-                            BusorTrainInvoiceNumber = entry.BusorTrainInvoiceNumber,
-                            TaxiInvoiceNumber = entry.TaxiInvoiceNumber,
-                            Amount = entry.TravelAmount,
-                            Remarks = entry.TravelRemarks,
-                            AppliedRatePerKm = currentRate.AmountPerKm,
+                            // --------------------------------------------
+                            // Vehicle
+                            // --------------------------------------------
+
+                            VehicleTypeId =
+                                entry.VehicleTypeId,
+
+                            FuelTypeId =
+                                entry.FuelTypeId,
+
+                            VehicleDetailId =
+                                entry.VehicleDetailId,
+
+                            VehicleNumber =
+                                entry.VehicleNumber,
+
+
+                            // --------------------------------------------
+                            // Travel Details
+                            // --------------------------------------------
+
+                            TravelDate =
+                                entry.TravelDate,
+
+                            Purpose =
+                                entry.Purpose,
+
+                            FromLocation =
+                                entry.FromLocation,
+
+                            ToLocation =
+                                entry.ToLocation,
+
+
+                            // --------------------------------------------
+                            // Distance
+                            // --------------------------------------------
+
+                            KmRun =
+                                entry.KmRun,
+
+
+                            // --------------------------------------------
+                            // Amount
+                            // --------------------------------------------
+
+                            Amount =
+                                travelAmount,
+
+
+                            // --------------------------------------------
+                            // Applied Rate
+                            // --------------------------------------------
+
+                            AppliedRatePerKm =
+                                appliedRatePerKm,
+
+
+                            // --------------------------------------------
+                            // Active
+                            // --------------------------------------------
+
                             IsActive = true
                         };
+
 
                         _context.ClaimTravels.Add(travel);
 
+
+                        // Need TravelId before Food / Expense
                         await _context.SaveChangesAsync();
-
-                        var food = new ClaimFood
-                        {
-                            ClaimId = claimId,
-                            TravelId = travel.TravelId,
-
-                            FoodDate = entry.TravelDate,
-                            Breakfast = entry.Breakfast,
-                            Lunch = entry.Lunch,
-                            Dinner = entry.Dinner,
-                            Amount = entry.FoodAmount,
-
-                            BreakfastInvoiceNumber = entry.BreakfastInvoiceNumber,
-                            LunchInvoiceNumber = entry.LunchInvoiceNumber,
-                            DinnerInvoiceNumber = entry.DinnerInvoiceNumber,
-                            DocumentPath = ""
-                        };
-
-                        _context.ClaimFoods.Add(food);
-
-                        var expense = new ClaimExpense
-                        {
-                            ClaimId = claimId,
-                            TravelId = travel.TravelId,
-
-                            TollAmount = entry.TollAmount,
-                            AutoAmount = entry.AutoAmount,
-                            OtherAmount = entry.OtherAmount,
-
-                            ExpenseDate = entry.TravelDate,
-                            Remarks = entry.ExpenseRemarks,
-                            created_at = DateTime.Now,
-                            IsActive = true
-                        };
-
-                        _context.ClaimExpenses.Add(expense);
                     }
+
+
+                    // ========================================================
+                    // 8.6 TRACK TRAVEL ID
+                    // ========================================================
+
+                    incomingTravelIds.Add(travel.TravelId);
+
+
+                    // ========================================================
+                    // 8.7 FOOD
+                    // One Food per Travel
+                    // ========================================================
+
+                    var existingFood = await _context.ClaimFoods
+                        .FirstOrDefaultAsync(x =>
+                            x.ClaimId == claimId &&
+                            x.TravelId == travel.TravelId &&
+                            x.IsActive);
+
+
+                    // --------------------------------------------
+                    // Food exists
+                    // --------------------------------------------
+
+                    if (entry.FoodTypeId.HasValue &&
+                        entry.FoodTypeId.Value > 0 &&
+                        entry.FoodAmount > 0)
+                    {
+                        if (existingFood != null)
+                        {
+                            existingFood.FoodDate =
+                                entry.TravelDate;
+
+                            existingFood.FoodTypeId =
+                                entry.FoodTypeId.Value;
+
+                            existingFood.Amount =
+                                entry.FoodAmount;
+
+                            _context.ClaimFoods.Update(existingFood);
+                        }
+                        else
+                        {
+                            var food = new ClaimFood
+                            {
+                                ClaimId =
+                                    claimId,
+
+                                TravelId =
+                                    travel.TravelId,
+
+                                FoodDate =
+                                    entry.TravelDate,
+
+                                FoodTypeId =
+                                    entry.FoodTypeId.Value,
+
+                                Amount =
+                                    entry.FoodAmount,
+
+                                IsActive = true
+                            };
+
+                            _context.ClaimFoods.Add(food);
+                        }
+                    }
+
+
+                    // --------------------------------------------
+                    // Food removed
+                    // --------------------------------------------
+
+                    else
+                    {
+                        if (existingFood != null)
+                        {
+                            existingFood.IsActive = false;
+                        }
+                    }
+
+
+                    // ========================================================
+                    // 8.8 MULTIPLE EXPENSES
+                    // ========================================================
+
+                    var incomingExpenseIds = new HashSet<int>();
+
+
+                    if (entry.Expenses != null &&
+                        entry.Expenses.Any())
+                    {
+                        foreach (var expenseDto in entry.Expenses)
+                        {
+                            // --------------------------------------------
+                            // Ignore empty expense
+                            // --------------------------------------------
+
+                            if (string.IsNullOrWhiteSpace(
+                                    expenseDto.ExpenseType) ||
+                                expenseDto.ExpenseAmount <= 0)
+                            {
+                                continue;
+                            }
+
+
+                            // --------------------------------------------
+                            // Existing Expense ID
+                            // --------------------------------------------
+
+                            if (expenseDto.ExpenseId > 0)
+                            {
+                                incomingExpenseIds.Add(
+                                    expenseDto.ExpenseId);
+
+
+                                var existingExpense =
+                                    await _context.ClaimExpenses
+                                        .FirstOrDefaultAsync(x =>
+                                            x.ExpenseId ==
+                                                expenseDto.ExpenseId &&
+
+                                            x.ClaimId ==
+                                                claimId &&
+
+                                            x.TravelId ==
+                                                travel.TravelId &&
+
+                                            x.IsActive);
+
+
+                                if (existingExpense == null)
+                                {
+                                    return BadRequest(new
+                                    {
+                                        success = false,
+                                        message =
+                                            $"Expense {expenseDto.ExpenseId} not found for Travel {travel.TravelId}."
+                                    });
+                                }
+
+
+                                // ----------------------------------------
+                                // UPDATE EXISTING EXPENSE
+                                // ----------------------------------------
+
+                                existingExpense.ExpenseDate =
+                                    entry.TravelDate;
+
+                                existingExpense.ExpenseType =
+                                    expenseDto.ExpenseType;
+
+                                existingExpense.InvoiceNo =
+                                    expenseDto.InvoiceNo;
+
+                                existingExpense.Description =
+                                    expenseDto.Description;
+
+                                existingExpense.Purpose =
+                                    expenseDto.ExpensePurpose;
+
+                                existingExpense.Amount =
+                                    expenseDto.ExpenseAmount;
+
+                                _context.ClaimExpenses.Update(
+                                    existingExpense);
+                            }
+
+
+                            // --------------------------------------------
+                            // New Expense
+                            // ExpenseId = 0
+                            // --------------------------------------------
+
+                            else
+                            {
+                                var expense = new ClaimExpense
+                                {
+                                    ClaimId =
+                                        claimId,
+
+                                    TravelId =
+                                        travel.TravelId,
+
+                                    ExpenseDate =
+                                        entry.TravelDate,
+
+                                    ExpenseType =
+                                        expenseDto.ExpenseType,
+
+                                    InvoiceNo =
+                                        expenseDto.InvoiceNo,
+
+                                    Description =
+                                        expenseDto.Description,
+
+                                    Purpose =
+                                        expenseDto.ExpensePurpose,
+
+                                    Amount =
+                                        expenseDto.ExpenseAmount,
+
+                                    created_at =
+                                        DateTime.Now,
+
+                                    IsActive = true
+                                };
+
+                                _context.ClaimExpenses.Add(expense);
+                            }
+                        }
+                    }
+
+
+                    // ========================================================
+                    // 8.9 DEACTIVATE REMOVED EXPENSES
+                    //
+                    // Example:
+                    // DB:
+                    // Toll     ID 10
+                    // Others   ID 11
+                    // Parking  ID 12
+                    //
+                    // Request:
+                    // ID 10
+                    // ID 11
+                    //
+                    // ID 12 -> inactive
+                    // ========================================================
+
+                    var existingExpenses =
+                        await _context.ClaimExpenses
+                            .Where(x =>
+                                x.ClaimId == claimId &&
+                                x.TravelId == travel.TravelId &&
+                                x.IsActive)
+                            .ToListAsync();
+
+
+                    foreach (var existingExpense in existingExpenses)
+                    {
+                        if (!incomingExpenseIds.Contains(
+                                existingExpense.ExpenseId))
+                        {
+                            existingExpense.IsActive = false;
+                        }
+                    }
+
+
+                    // ========================================================
+                    // 8.10 CALCULATE TOTAL
+                    // ========================================================
+
+                    decimal expenseTotal =
+                        entry.Expenses?
+                            .Where(x =>
+                                !string.IsNullOrWhiteSpace(
+                                    x.ExpenseType) &&
+                                x.ExpenseAmount > 0)
+                            .Sum(x =>
+                                x.ExpenseAmount)
+                        ?? 0;
+
+
+                    calculatedTotalAmount +=
+                        travelAmount +
+                        entry.FoodAmount +
+                        expenseTotal;
                 }
 
-                await _context.SaveChangesAsync();
-                //=====================================================
-                // DELETE REMOVED TRAVELS
-                //=====================================================
 
-                var incomingTravelIds = dto.ClaimEntries
-                    .Where(x => x.TravelId.HasValue && x.TravelId.Value > 0)
-                    .Select(x => x.TravelId.Value)
-                    .ToList();
+                // ============================================================
+                // 9. DELETE / DEACTIVATE REMOVED TRAVELS
+                //
+                // If old TravelId is not present in request,
+                // that travel was removed from UI.
+                // ============================================================
 
-                var removedTravels = await _context.ClaimTravels
-                    .Where(x =>
-                        x.ClaimId == claimId &&
-                        x.IsActive &&
-                        !incomingTravelIds.Contains(x.TravelId))
-                    .ToListAsync();
-
-                foreach (var travel in removedTravels)
-                {
-                    travel.IsActive = false;
-
-                    var foods = await _context.ClaimFoods
+                var removedTravels =
+                    await _context.ClaimTravels
                         .Where(x =>
                             x.ClaimId == claimId &&
-                            x.TravelId == travel.TravelId)
+                            x.IsActive &&
+                            !incomingTravelIds.Contains(
+                                x.TravelId))
                         .ToListAsync();
+
+
+                foreach (var removedTravel in removedTravels)
+                {
+                    // --------------------------------------------
+                    // Deactivate Travel
+                    // --------------------------------------------
+
+                    removedTravel.IsActive = false;
+
+
+                    // --------------------------------------------
+                    // Deactivate Food
+                    // --------------------------------------------
+
+                    var foods =
+                        await _context.ClaimFoods
+                            .Where(x =>
+                                x.ClaimId == claimId &&
+                                x.TravelId ==
+                                    removedTravel.TravelId &&
+                                x.IsActive)
+                            .ToListAsync();
+
 
                     foreach (var food in foods)
                     {
                         food.IsActive = false;
                     }
 
-                    var expenses = await _context.ClaimExpenses
-                        .Where(x =>
-                            x.ClaimId == claimId &&
-                            x.TravelId == travel.TravelId)
-                        .ToListAsync();
+
+                    // --------------------------------------------
+                    // Deactivate Expenses
+                    // --------------------------------------------
+
+                    var expenses =
+                        await _context.ClaimExpenses
+                            .Where(x =>
+                                x.ClaimId == claimId &&
+                                x.TravelId ==
+                                    removedTravel.TravelId &&
+                                x.IsActive)
+                            .ToListAsync();
+
 
                     foreach (var expense in expenses)
                     {
                         expense.IsActive = false;
                     }
 
-                    var documents = await _context.ClaimDocuments
-                        .Where(x =>
-                            x.ClaimId == claimId &&
-                            x.ReferenceId == travel.TravelId &&
-                            x.IsActive)
-                        .ToListAsync();
 
-                    foreach (var doc in documents)
+                    // --------------------------------------------
+                    // Deactivate Documents
+                    // --------------------------------------------
+
+                    var documents =
+                        await _context.ClaimDocuments
+                            .Where(x =>
+                                x.ClaimId == claimId &&
+                                x.ReferenceId ==
+                                    removedTravel.TravelId &&
+                                x.IsActive)
+                            .ToListAsync();
+
+
+                    foreach (var document in documents)
                     {
-                        doc.IsActive = false;
+                        document.IsActive = false;
                     }
                 }
 
-                //=====================================================
-                // SAVE
-                //=====================================================
+
+                // ============================================================
+                // 10. UPDATE CLAIM MASTER TOTAL
+                // ============================================================
+
+                claim.EmployeeId =
+                    loginEmpId;
+
+                claim.ClaimMonth =
+                    dto.ClaimMonth;
+
+                claim.ClaimYear =
+                    dto.ClaimMonth.Year;
+
+                claim.TotalAmount =
+                    calculatedTotalAmount;
+
+                claim.LastModifiedAt =
+                    DateTime.Now;
+
+
+                _context.ClaimMasters.Update(claim);
+
+
+                // ============================================================
+                // 11. FINAL SAVE
+                // ============================================================
 
                 await _context.SaveChangesAsync();
 
+
+                // ============================================================
+                // 12. COMMIT TRANSACTION
+                // ============================================================
+
                 await transaction.CommitAsync();
+
+
+                // ============================================================
+                // 13. SUCCESS RESPONSE
+                // ============================================================
 
                 return Ok(new
                 {
                     success = true,
-                    message = "Draft updated successfully."
+                    message = "Draft updated successfully.",
+                    data = new
+                    {
+                        claimId = claim.ClaimId,
+                        claimNo = claim.ClaimNo,
+                        status = claim.Status,
+                        totalAmount = claim.TotalAmount,
+                        travelCount = incomingTravelIds.Count
+                    }
                 });
             }
-
             catch (Exception ex)
             {
+                // ============================================================
+                // ROLLBACK
+                // ============================================================
+
                 await transaction.RollbackAsync();
 
                 return StatusCode(500, new
                 {
                     success = false,
                     message = "Error while updating draft.",
-                    error = ex.InnerException?.Message ?? ex.Message
+                    error = ex.InnerException?.Message ??
+                            ex.Message
                 });
             }
         }
 
-
-            [HttpPut("submit-draft/{claimId}")]
+        [Authorize]
+        [HttpPut("submit-draft/{claimId}")]
         public async Task<IActionResult> SubmitDraft(int claimId)
         {
             try
@@ -2166,7 +3480,23 @@ Local Expense Claim Portal
                 // =====================================
                 // Reset Claim Status
                 // =====================================
+                //----for validation next month only submit 
+                //var today = DateTime.Today;
 
+                //var nextMonthFirstDay = new DateTime(
+                //    claim.ClaimMonth.Year,
+                //    claim.ClaimMonth.Month,
+                //    1
+                //).AddMonths(1);
+
+                //if (today != nextMonthFirstDay)
+                //{
+                //    return BadRequest(new
+                //    {
+                //        success = false,
+                //        message = $"This claim can be submitted only on {nextMonthFirstDay:dd-MM-yyyy}."
+                //    });
+                //}
                 claim.Status = "Pending";
                 
                 claim.CurrentApprovalLevel = 1;
@@ -2420,6 +3750,7 @@ Local Expense Claim Portal
         }
 
         //-----Dropdown api for vehicle types and fueltypes ------>
+        [Authorize]
         [HttpGet("vehicle-types")]
         public async Task<IActionResult> GetVehicleTypes()
         {
@@ -2450,6 +3781,7 @@ Local Expense Claim Portal
 
         // Fuel Type dropdown
         // GET: /api/TravelMaster/fuel-types
+        [Authorize]
         [HttpGet("fuel-types")]
         public async Task<IActionResult> GetFuelTypes()
         {
@@ -2476,111 +3808,290 @@ Local Expense Claim Portal
                 });
             }
         }
-
+        [Authorize]
         [HttpPost("upload-document")]
         public async Task<IActionResult> UploadDocument(
     [FromForm] UploadDocumentDto model)
         {
             try
             {
-                // ==========================
-                // Validation
-                // ==========================
+                // =====================================================
+                // VALIDATION
+                // =====================================================
 
                 if (model.File == null || model.File.Length == 0)
                 {
                     return BadRequest(new
                     {
                         success = false,
-                        message = "File is required"
+                        message = "File is required."
                     });
                 }
 
-                // ==========================
-                // Get Claim Details
-                // ==========================
+                if (model.ClaimId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "ClaimId is required."
+                    });
+                }
+
+                if (model.ReferenceId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "ReferenceId is required."
+                    });
+                }
+
+                if (string.IsNullOrWhiteSpace(model.ModuleType))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "ModuleType is required."
+                    });
+                }
+
+                if (string.IsNullOrWhiteSpace(model.DocumentType))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "DocumentType is required."
+                    });
+                }
+
+                // =====================================================
+                // GET CLAIM
+                // =====================================================
 
                 var claim = await _context.ClaimMasters
-                    .FirstOrDefaultAsync(x => x.ClaimId == model.ClaimId);
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == model.ClaimId &&
+                        x.IsActive);
 
                 if (claim == null)
                 {
                     return NotFound(new
                     {
                         success = false,
-                        message = "Claim not found"
+                        message = "Claim not found."
                     });
                 }
 
-                // ==========================
-                // Create Claim Folder
-                // Uploads/Claims/CLM20260001
-                // ==========================
+                // =====================================================
+                // CLAIM NUMBER
+                // Example:
+                // LEC-012-26/27
+                //
+                // Folder:
+                // LEC-012-26-27
+                // =====================================================
 
                 var claimNumber = claim.ClaimNo;
 
-                var folderPath = Path.Combine(
-                    Directory.GetCurrentDirectory(),
-                    "wwwroot",
-                    "Uploads",
-                    "Claims",
-                    claimNumber);
-
-                if (!Directory.Exists(folderPath))
+                if (string.IsNullOrWhiteSpace(claimNumber))
                 {
-                    Directory.CreateDirectory(folderPath);
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Claim number is not available."
+                    });
                 }
 
-                // ==========================
-                // Generate File Name
-                // ==========================
+                var folderClaimNumber = claimNumber
+                    .Replace("/", "-")
+                    .Replace("\\", "-");
+
+                // =====================================================
+                // WWWROOT
+                // =====================================================
+
+                var uploadsRoot = Path.Combine(
+                    _environment.WebRootPath,
+                    "Uploads",
+                    "Claims"
+                );
+
+                // =====================================================
+                // TRAVEL ENTRY FOLDER
+                //
+                // Example:
+                // Travel_66
+                //
+                // ReferenceId = TravelId
+                // =====================================================
+
+                var travelFolder = $"Travel_{model.ReferenceId}";
+
+                // =====================================================
+                // CLAIM + TRAVEL FOLDER
+                //
+                // wwwroot/Uploads/Claims/LEC-012-26-27/Travel_66
+                // =====================================================
+
+                var claimFolder = Path.Combine(
+                    uploadsRoot,
+                    folderClaimNumber,
+                    travelFolder
+                );
+
+                // =====================================================
+                // CREATE FOLDER
+                // =====================================================
+
+                if (!Directory.Exists(claimFolder))
+                {
+                    Directory.CreateDirectory(claimFolder);
+                }
+
+                // =====================================================
+                // FIND EXISTING DOCUMENT
+                //
+                // Same:
+                // ClaimId
+                // ReferenceId
+                // ModuleType
+                // DocumentType
+                //
+                // means user is replacing old bill
+                // =====================================================
+
+                var existingDocument = await _context.ClaimDocuments
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == model.ClaimId &&
+                        x.ReferenceId == model.ReferenceId &&
+                        x.ModuleType == model.ModuleType &&
+                        x.DocumentType == model.DocumentType &&
+                        x.IsActive);
+
+                // =====================================================
+                // DELETE OLD PHYSICAL FILE
+                // =====================================================
+
+                if (existingDocument != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(existingDocument.FilePath))
+                    {
+                        var oldRelativePath = existingDocument.FilePath
+                            .Replace("/", Path.DirectorySeparatorChar.ToString())
+                            .Replace("\\", Path.DirectorySeparatorChar.ToString());
+
+                        var oldPhysicalPath = Path.Combine(
+                            _environment.WebRootPath,
+                            oldRelativePath
+                        );
+
+                        if (System.IO.File.Exists(oldPhysicalPath))
+                        {
+                            System.IO.File.Delete(oldPhysicalPath);
+                        }
+                    }
+
+                    // =================================================
+                    // MAKE OLD DB RECORD INACTIVE
+                    // =================================================
+
+                    existingDocument.IsActive = false;
+                }
+
+                // =====================================================
+                // FILE EXTENSION
+                // =====================================================
 
                 var extension =
                     Path.GetExtension(model.File.FileName);
 
+                if (string.IsNullOrWhiteSpace(extension))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "File extension is missing."
+                    });
+                }
+
+                // =====================================================
+                // UNIQUE FILE NAME
+                // =====================================================
+
                 var storedFileName =
-                    $"{model.DocumentType}_{DateTime.Now.Ticks}{extension}";
+                    $"{model.DocumentType}_{Guid.NewGuid():N}{extension}";
 
-                // ==========================
-                // Physical Path
-                // ==========================
+                // =====================================================
+                // PHYSICAL FILE PATH
+                //
+                // Example:
+                // wwwroot/Uploads/Claims/
+                // LEC-012-26-27/
+                // Travel_66/
+                // FoodBill_xxx.jpg
+                // =====================================================
 
-                var physicalPath =
-                    Path.Combine(folderPath, storedFileName);
+                var physicalPath = Path.Combine(
+                    claimFolder,
+                    storedFileName
+                );
 
-                // ==========================
-                // Save File
-                // ==========================
+                // =====================================================
+                // SAVE FILE
+                // =====================================================
 
-                using (var stream = new FileStream(
+                await using (var stream = new FileStream(
                     physicalPath,
-                    FileMode.Create))
+                    FileMode.Create,
+                    FileAccess.Write))
                 {
                     await model.File.CopyToAsync(stream);
                 }
 
-                // ==========================
-                // Relative Path
-                // ==========================
+                // =====================================================
+                // VERIFY FILE
+                // =====================================================
+
+                if (!System.IO.File.Exists(physicalPath))
+                {
+                    return StatusCode(500, new
+                    {
+                        success = false,
+                        message = "File was not saved."
+                    });
+                }
+
+                // =====================================================
+                // RELATIVE PATH FOR DATABASE
+                // =====================================================
 
                 var relativePath =
-                    $"Uploads/Claims/{claimNumber}/{storedFileName}";
+                    $"Uploads/Claims/{folderClaimNumber}/{travelFolder}/{storedFileName}";
 
-                // ==========================
-                // Save Document Entry
-                // ==========================
+                // =====================================================
+                // SAVE NEW DOCUMENT
+                // =====================================================
 
                 var document = new ClaimDocument
                 {
                     ClaimId = model.ClaimId,
+
                     ReferenceId = model.ReferenceId,
-                    ModuleType = model.ModuleType,
-                    DocumentType = model.DocumentType,
+
+                    ModuleType = model.ModuleType.Trim(),
+
+                    DocumentType = model.DocumentType.Trim(),
+
                     OriginalFileName = model.File.FileName,
+
                     StoredFileName = storedFileName,
+
                     FilePath = relativePath,
+
                     FileExtension = extension,
+
                     UploadedDate = DateTime.Now,
+
                     IsActive = true
                 };
 
@@ -2588,28 +4099,65 @@ Local Expense Claim Portal
 
                 await _context.SaveChangesAsync();
 
-                // ==========================
-                // Response
-                // ==========================
+                // =====================================================
+                // FILE URL
+                // =====================================================
+
+                var baseUrl =
+                    $"{Request.Scheme}://{Request.Host}";
+
+                var fileUrl =
+                    $"{baseUrl}/{relativePath.Replace("\\", "/")}";
+
+                // =====================================================
+                // RESPONSE
+                // =====================================================
 
                 return Ok(new
                 {
                     success = true,
-                    message = "Document uploaded successfully",
-                    documentId = document.DocumentId,
-                    filePath = relativePath
+
+                    message = existingDocument != null
+                        ? "Document replaced successfully."
+                        : "Document uploaded successfully.",
+
+                    data = new
+                    {
+                        documentId = document.DocumentId,
+
+                        claimId = document.ClaimId,
+
+                        referenceId = document.ReferenceId,
+
+                        claimNo = claim.ClaimNo,
+
+                        moduleType = document.ModuleType,
+
+                        documentType = document.DocumentType,
+
+                        originalFileName = document.OriginalFileName,
+
+                        storedFileName = document.StoredFileName,
+
+                        filePath = document.FilePath,
+
+                        fileUrl = fileUrl
+                    }
                 });
             }
             catch (Exception ex)
             {
-                return BadRequest(new
+                return StatusCode(500, new
                 {
                     success = false,
-                    message = ex.Message
+
+                    message = "Error while uploading document.",
+
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
-
+        [Authorize]
         [HttpGet("claim-documents/{claimId}")]
         public async Task<IActionResult> GetClaimDocuments(
     int claimId)
@@ -2621,7 +4169,7 @@ Local Expense Claim Portal
 
             return Ok(documents);
         }
-
+        [Authorize]
         [HttpDelete("document/{documentId}")]
         public async Task<IActionResult> DeleteDocument(
     int documentId)
@@ -2647,7 +4195,7 @@ Local Expense Claim Portal
 
 
         //------------APPROVAL FOR CLAIM----------------//
-
+        //[Authorize]
         [HttpPost("approve-claim")]
         public async Task<IActionResult> ApproveClaim(
       [FromBody] ClaimApprovalActionDto dto)
@@ -2895,7 +4443,7 @@ Local Expense Claim Portal
                 });
             }
         }
-
+        //[Authorize]
         [HttpGet("mail-approve")]
         public async Task<IActionResult> MailApprove(Guid token)
         {
@@ -3163,7 +4711,7 @@ body{
                 return Content(ex.Message);
             }
         }
-
+        //[Authorize]
         [HttpPost("reject-claim")]
         public async Task<IActionResult> RejectClaim([FromBody] ClaimApprovalActionDto dto)
         {
@@ -3234,7 +4782,7 @@ body{
                 // =====================================
 
                 claim.Status = "Rejected";
-                claim.Remarks = remarks;          // Save latest rejection reason
+                
                 claim.RejectedAt = DateTime.Now;
                 claim.CurrentApprovalLevel = null;
                 claim.LastModifiedAt = DateTime.Now;
@@ -3275,7 +4823,7 @@ body{
                 });
             }
         }
-
+        //[Authorize]
         [HttpGet("mail-reject")]
             public async Task<IActionResult> MailReject(Guid token)
             {
@@ -3307,7 +4855,7 @@ body{
                 if (claim != null)
                 {
                     claim.Status = "Rejected";
-                    claim.Remarks = remarks;      // Save latest rejection reason
+                  
                     claim.RejectedAt = DateTime.Now;
                     claim.CurrentApprovalLevel = null;
                     claim.LastModifiedAt = DateTime.Now;
@@ -3394,7 +4942,7 @@ body{
             }
         }
 
-
+        //[Authorize]
         [HttpGet("reject-form")]
         public IActionResult RejectForm(Guid token)
         {
@@ -3658,16 +5206,21 @@ You may now close this window.
 
 
         //-------Reject resubmit Apiii-------------//
-
+        [Authorize]
         [HttpPut("resubmit-claim/{claimId}")]
         public async Task<IActionResult> ResubmitClaim(
-    int claimId,
-    [FromBody] CreateClaimDto dto)
+         int claimId,
+         [FromBody] CreateClaimDto dto)
         {
-            await using var transaction = await _context.Database.BeginTransactionAsync();
+            await using var transaction =
+                await _context.Database.BeginTransactionAsync();
 
             try
             {
+                // ==========================================
+                // VALIDATION
+                // ==========================================
+
                 if (dto == null)
                 {
                     return BadRequest(new
@@ -3676,6 +5229,19 @@ You may now close this window.
                         message = "Request data is required."
                     });
                 }
+
+                if (dto.ClaimEntries == null || !dto.ClaimEntries.Any())
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "At least one claim entry is required."
+                    });
+                }
+
+                // ==========================================
+                // GET LOGGED-IN EMPLOYEE
+                // ==========================================
 
                 var empIdClaim = User.FindFirst("EmpId")?.Value;
 
@@ -3688,10 +5254,23 @@ You may now close this window.
                     });
                 }
 
-                int loginEmpId = int.Parse(empIdClaim);
+                if (!int.TryParse(empIdClaim, out int loginEmpId))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid EmployeeId in token."
+                    });
+                }
+
+                // ==========================================
+                // GET CLAIM
+                // ==========================================
 
                 var claim = await _context.ClaimMasters
-                    .FirstOrDefaultAsync(x => x.ClaimId == claimId);
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive);
 
                 if (claim == null)
                 {
@@ -3702,6 +5281,10 @@ You may now close this window.
                     });
                 }
 
+                // ==========================================
+                // EMPLOYEE VALIDATION
+                // ==========================================
+
                 if (claim.EmployeeId != loginEmpId)
                 {
                     return BadRequest(new
@@ -3710,6 +5293,10 @@ You may now close this window.
                         message = "You are not authorized to edit this claim."
                     });
                 }
+
+                // ==========================================
+                // ONLY REJECTED CLAIM CAN BE RESUBMITTED
+                // ==========================================
 
                 if (claim.Status != "Rejected")
                 {
@@ -3720,37 +5307,198 @@ You may now close this window.
                     });
                 }
 
-                decimal totalAmount = dto.ClaimEntries.Sum(x =>
-                    x.TravelAmount +
-                    x.FoodAmount +
-                    (x.TollAmount ?? 0) +
-                    (x.AutoAmount ?? 0) +
-                    (x.OtherAmount ?? 0));
+                // ==========================================
+                // CALCULATE TOTAL
+                // ==========================================
 
-                // ===============================
-                // Update Claim Master
-                // ===============================
+                decimal totalAmount = 0;
+
+                foreach (var item in dto.ClaimEntries)
+                {
+                    // ======================================
+                    // AMOUNT VARIABLES
+                    // ======================================
+
+                    decimal travelAmount = 0;
+                    decimal foodAmount = item.FoodAmount;
+                    decimal expenseAmount = 0;
+
+
+                    // ======================================
+                    // BIKE / CAR
+                    // VehicleTypeId 2 = Bike
+                    // VehicleTypeId 3 = Car
+                    // ======================================
+
+                    if (item.VehicleTypeId == 2 ||
+                        item.VehicleTypeId == 3)
+                    {
+                        // ----------------------------------
+                        // DISTANCE IS OPTIONAL
+                        // ----------------------------------
+
+                        if (item.KmRun > 0)
+                        {
+                            // ----------------------------------
+                            // FUEL TYPE REQUIRED ONLY
+                            // WHEN DISTANCE IS ENTERED
+                            // ----------------------------------
+
+                            if (item.FuelTypeId <= 0)
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message =
+                                        "Fuel Type is required when distance is entered."
+                                });
+                            }
+
+
+                            // ----------------------------------
+                            // GET RATE ONLY FOR BIKE / CAR
+                            // ----------------------------------
+
+                            var currentRate = await _context.VehicleRateMasters
+                                .Where(x =>
+                                    x.VehicleTypeId == item.VehicleTypeId &&
+                                    x.FuelTypeId == item.FuelTypeId &&
+                                    x.IsActive)
+                                .OrderByDescending(x => x.ValidFrom)
+                                .FirstOrDefaultAsync();
+
+
+                            // ----------------------------------
+                            // RATE NOT FOUND
+                            // ----------------------------------
+
+                            if (currentRate == null)
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message =
+                                        $"Rate not configured for VehicleType {item.VehicleTypeId} and FuelType {item.FuelTypeId}."
+                                });
+                            }
+
+
+                            // ----------------------------------
+                            // KM × RATE
+                            // ----------------------------------
+
+                            decimal rate =
+                                currentRate.AmountPerKm;
+
+                          
+
+                            travelAmount = (item.KmRun * rate) ?? 0;
+                        }
+                        else
+                        {
+                            // ----------------------------------
+                            // NO DISTANCE
+                            // NO ERROR
+                            // NO RATE
+                            // ----------------------------------
+
+                            travelAmount = 0;
+                        }
+                    }
+
+
+                    // ======================================
+                    // TAXI / BUS / TRAIN / OTHER
+                    // USER ENTERED AMOUNT
+                    // ======================================
+
+                    else
+                    {
+                        travelAmount = item.TravelAmount;
+                    }
+
+
+                    // ======================================
+                    // FOOD
+                    // ======================================
+
+                    if (foodAmount < 0)
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "Food amount cannot be negative."
+                        });
+                    }
+
+
+                    // ======================================
+                    // EXPENSE
+                    // ======================================
+
+                    if (item.Expenses != null)
+                    {
+                        expenseAmount = item.Expenses
+                            .Where(x => x.ExpenseAmount > 0)
+                            .Sum(x => x.ExpenseAmount);
+                    }
+
+
+                    if (expenseAmount < 0)
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "Expense amount cannot be negative."
+                        });
+                    }
+
+
+                    // ======================================
+                    // GRAND TOTAL
+                    // ======================================
+
+                    totalAmount +=
+                        travelAmount +
+                        foodAmount +
+                        expenseAmount;
+                }
+
+                // ==========================================
+                // UPDATE CLAIM MASTER
+                // ==========================================
 
                 claim.ClaimMonth = dto.ClaimMonth;
                 claim.ClaimYear = dto.ClaimMonth.Year;
+
                 claim.TotalAmount = totalAmount;
-                claim.Remarks = dto.ClaimEntries.FirstOrDefault()?.Remarks;
+
+                // No Remarks
 
                 claim.Status = "Pending";
+
                 claim.SubmittedAt = DateTime.Now;
+
                 claim.ApprovedAt = null;
                 claim.RejectedAt = null;
+
                 claim.CurrentApprovalLevel = 1;
+
                 claim.LastModifiedAt = DateTime.Now;
 
                 await _context.SaveChangesAsync();
+
+
                 // ==========================================
-                // Delete Old Travel / Food / Expense
+                // DELETE OLD TRAVEL / FOOD / EXPENSE
                 // ==========================================
 
-                var oldTravels = await _context.ClaimTravels
-                    .Where(x => x.ClaimId == claim.ClaimId)
-                    .ToListAsync();
+                var existingTravels = await _context.ClaimTravels
+    .Where(x =>
+        x.ClaimId == claim.ClaimId &&
+        x.IsActive)
+    .ToDictionaryAsync(x => x.TravelId);
+
 
                 var oldFoods = await _context.ClaimFoods
                     .Where(x => x.ClaimId == claim.ClaimId)
@@ -3761,131 +5509,348 @@ You may now close this window.
                     .ToListAsync();
 
                 _context.ClaimExpenses.RemoveRange(oldExpenses);
+
                 _context.ClaimFoods.RemoveRange(oldFoods);
-                _context.ClaimTravels.RemoveRange(oldTravels);
+
+                //_context.ClaimTravels.RemoveRange(oldTravels);
 
                 await _context.SaveChangesAsync();
 
+
                 // ==========================================
-                // Insert Updated Claim Entries
+                // INSERT / UPDATE CLAIM DETAILS
                 // ==========================================
 
                 foreach (var item in dto.ClaimEntries)
                 {
-                    var currentRate = await _context.VehicleRateMasters
-    .Where(x =>
-        x.VehicleTypeId == item.VehicleTypeId &&
-        x.FuelTypeId == item.FuelTypeId &&
-        x.IsActive)
-    .OrderByDescending(x => x.ValidFrom)
-    .FirstOrDefaultAsync();
+                    decimal travelAmount = 0;
+                    decimal? appliedRatePerKm = null;
 
-                    if (currentRate == null)
+                    // ======================================
+                    // 1. CALCULATE TRAVEL AMOUNT
+                    // ======================================
+
+                    // --------------------------------------
+                    // BIKE / CAR
+                    // VehicleTypeId 2 = Bike
+                    // VehicleTypeId 3 = Car
+                    // --------------------------------------
+
+                    if (item.VehicleTypeId == 2 ||
+                        item.VehicleTypeId == 3)
                     {
-                        return BadRequest(new
+                        // Distance is optional
+                        if (item.KmRun > 0)
                         {
-                            success = false,
-                            message = $"Rate not configured for VehicleType {item.VehicleTypeId} and FuelType {item.FuelTypeId}"
-                        });
-                    }
-                    // ----------------------------
-                    // Travel
-                    // ----------------------------
+                            // Fuel required only when KM is entered
+                            if (item.FuelTypeId <= 0)
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message =
+                                        "Fuel Type is required when distance is entered."
+                                });
+                            }
 
-                    var travel = new ClaimTravel
-                    {
-                        VehicleTypeId = item.VehicleTypeId,
-                        FuelTypeId = item.FuelTypeId,
-                        VehicleDetailId = item.VehicleDetailId,
-                        VehicleNumber = item.VehicleNumber,
-                        AppliedRatePerKm = currentRate.AmountPerKm,
-                        ClaimId = claim.ClaimId,
-                        TravelDate = item.TravelDate,
-                        Purpose = item.Purpose,
-                        FromLocation = item.FromLocation,
-                        ToLocation = item.ToLocation,
-                        KmRun = item.KmRun,
-                        BusorTrainInvoiceNumber = item.BusorTrainInvoiceNumber,
-                        TaxiInvoiceNumber = item.TaxiInvoiceNumber,
-                        Amount = item.TravelAmount,
-                        Remarks = item.TravelRemarks,
-                        IsActive = true
-                    };
+                            // ----------------------------------
+                            // GET VEHICLE RATE
+                            // ----------------------------------
 
-                    _context.ClaimTravels.Add(travel);
+                            var currentRate = await _context.VehicleRateMasters
+                                .Where(x =>
+                                    x.VehicleTypeId == item.VehicleTypeId &&
+                                    x.FuelTypeId == item.FuelTypeId &&
+                                    x.IsActive)
+                                .OrderByDescending(x => x.ValidFrom)
+                                .FirstOrDefaultAsync();
 
-                    await _context.SaveChangesAsync();
+                            if (currentRate == null)
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message =
+                                        $"Rate not configured for VehicleType {item.VehicleTypeId} and FuelType {item.FuelTypeId}."
+                                });
+                            }
 
-                    // ----------------------------
-                    // Food
-                    // ----------------------------
+                            // AmountPerKm is decimal
+                            decimal rate = currentRate.AmountPerKm;
 
-                    var food = new ClaimFood
-                    {
-                        ClaimId = claim.ClaimId,
-                        TravelId = travel.TravelId,
-                        FoodDate = item.TravelDate,
-                        Breakfast = item.Breakfast,
-                        Lunch = item.Lunch,
-                        Dinner = item.Dinner,
-                        Amount = item.FoodAmount,
-                        BreakfastInvoiceNumber = item.BreakfastInvoiceNumber,
-                        LunchInvoiceNumber = item.LunchInvoiceNumber,
-                        DinnerInvoiceNumber = item.DinnerInvoiceNumber,
-                        IsActive = true
-                    };
+                            // KM × RATE
+                            travelAmount = (item.KmRun * rate) ?? 0;
 
-                    _context.ClaimFoods.Add(food);
-
-                    // ----------------------------
-                    // Expense
-                    // ----------------------------
-
-                    if ((item.TollAmount ?? 0) > 0)
-                    {
-                        _context.ClaimExpenses.Add(new ClaimExpense
+                            // Rate snapshot
+                            appliedRatePerKm =
+                                currentRate.AmountPerKm;
+                        }
+                        else
                         {
-                            ClaimId = claim.ClaimId,
-                            TravelId = travel.TravelId,
-                           
-                            ExpenseDate = item.TravelDate,
-                            TollAmount = item.TollAmount ?? 0,
-                            Remarks = item.ExpenseRemarks,
-                            IsActive = true,
-                            created_at = DateTime.Now
-                        });
+                            // No distance
+                            // No error
+                            // No rate calculation
+
+                            travelAmount = 0;
+
+                            appliedRatePerKm = null;
+                        }
                     }
 
-                    if ((item.AutoAmount ?? 0) > 0)
+                    // --------------------------------------
+                    // TAXI / BUS / TRAIN / OTHER
+                    // User entered amount
+                    // --------------------------------------
+
+                    else
                     {
-                        _context.ClaimExpenses.Add(new ClaimExpense
-                        {
-                            ClaimId = claim.ClaimId,
-                            TravelId = travel.TravelId,
-                            
-                            ExpenseDate = item.TravelDate,
-                            AutoAmount = item.AutoAmount ?? 0,
-                            Remarks = item.ExpenseRemarks,
-                            IsActive = true,
-                            created_at = DateTime.Now
-                        });
+                        travelAmount =
+                            item.TravelAmount;
+
+                        appliedRatePerKm = null;
                     }
 
-                    if ((item.OtherAmount ?? 0) > 0)
+
+                    // ======================================
+                    // 2. EXISTING TRAVEL -> UPDATE
+                    // ======================================
+
+                    ClaimTravel travel;
+
+                    if (item.TravelId.HasValue &&
+                        item.TravelId.Value > 0)
                     {
-                        _context.ClaimExpenses.Add(new ClaimExpense
+                        // ----------------------------------
+                        // FIND EXISTING TRAVEL
+                        // ----------------------------------
+
+                        travel = await _context.ClaimTravels
+                            .FirstOrDefaultAsync(x =>
+                                x.TravelId == item.TravelId.Value &&
+                                x.ClaimId == claim.ClaimId &&
+                                x.IsActive);
+
+                        if (travel == null)
                         {
-                            ClaimId = claim.ClaimId,
-                            TravelId = travel.TravelId,
-                            
-                            ExpenseDate = item.TravelDate,
-                            OtherAmount = item.OtherAmount ?? 0,
-                            Remarks = item.ExpenseRemarks,
-                            IsActive = true,
-                            created_at = DateTime.Now
-                        });
+                            return BadRequest(new
+                            {
+                                success = false,
+                                message =
+                                    $"TravelId {item.TravelId.Value} not found for this claim."
+                            });
+                        }
+
+
+                        // ----------------------------------
+                        // UPDATE VEHICLE DETAILS
+                        // ----------------------------------
+
+                        travel.VehicleTypeId =
+                            item.VehicleTypeId;
+
+                        travel.FuelTypeId =
+                            item.FuelTypeId;
+
+                        travel.VehicleDetailId =
+                            item.VehicleDetailId;
+
+                        travel.VehicleNumber =
+                            item.VehicleNumber;
+
+
+                        // ----------------------------------
+                        // UPDATE TRAVEL DETAILS
+                        // ----------------------------------
+
+                        travel.TravelDate =
+                            item.TravelDate;
+
+                        travel.Purpose =
+                            item.Purpose;
+
+                        travel.FromLocation =
+                            item.FromLocation;
+
+                        travel.ToLocation =
+                            item.ToLocation;
+
+
+                        // ----------------------------------
+                        // UPDATE KM
+                        // ----------------------------------
+
+                        travel.KmRun =
+                            item.KmRun;
+
+
+                        // ----------------------------------
+                        // UPDATE AMOUNT
+                        // ----------------------------------
+
+                        travel.Amount =
+                            travelAmount;
+
+
+                        // ----------------------------------
+                        // UPDATE RATE SNAPSHOT
+                        // ----------------------------------
+
+                        travel.AppliedRatePerKm =
+                            appliedRatePerKm;
+
+                        travel.IsActive = true;
+
+                        _context.ClaimTravels.Update(travel);
+                    }
+
+
+                    // ======================================
+                    // 3. NEW TRAVEL -> INSERT
+                    // ======================================
+
+                    else
+                    {
+                        travel = new ClaimTravel
+                        {
+                            ClaimId =
+                                claim.ClaimId,
+
+                            // Vehicle
+                            VehicleTypeId =
+                                item.VehicleTypeId,
+
+                            FuelTypeId =
+                                item.FuelTypeId,
+
+                            VehicleDetailId =
+                                item.VehicleDetailId,
+
+                            VehicleNumber =
+                                item.VehicleNumber,
+
+                            // Travel
+                            TravelDate =
+                                item.TravelDate,
+
+                            Purpose =
+                                item.Purpose,
+
+                            FromLocation =
+                                item.FromLocation,
+
+                            ToLocation =
+                                item.ToLocation,
+
+                            // Distance
+                            KmRun =
+                                item.KmRun,
+
+                            // Amount
+                            Amount =
+                                travelAmount,
+
+                            // Rate
+                            AppliedRatePerKm =
+                                appliedRatePerKm,
+
+                            IsActive = true
+                        };
+
+                        _context.ClaimTravels.Add(travel);
+
+                        // TravelId required for Food / Expense
+                        await _context.SaveChangesAsync();
+                    }
+
+
+                    // ======================================
+                    // 4. FOOD
+                    // ======================================
+
+                    if (item.FoodTypeId.HasValue ||
+                        item.FoodAmount > 0)
+                    {
+                        var food = new ClaimFood
+                        {
+                            ClaimId =
+                                claim.ClaimId,
+
+                            TravelId =
+                                travel.TravelId,
+
+                            FoodDate =
+                                item.TravelDate,
+
+                            FoodTypeId =
+                                item.FoodTypeId,
+
+                            Amount =
+                                item.FoodAmount,
+
+                            IsActive = true
+                        };
+
+                        _context.ClaimFoods.Add(food);
+                    }
+
+
+                    // ======================================
+                    // 5. EXPENSE
+                    // ======================================
+
+                    if (item.Expenses != null &&
+                        item.Expenses.Any())
+                    {
+                        foreach (var expenseItem in item.Expenses)
+                        {
+                            if (string.IsNullOrWhiteSpace(
+                                    expenseItem.ExpenseType) ||
+                                expenseItem.ExpenseAmount <= 0)
+                            {
+                                continue;
+                            }
+
+                            var expense = new ClaimExpense
+                            {
+                                ClaimId =
+                                    claim.ClaimId,
+
+                                TravelId =
+                                    travel.TravelId,
+
+                                ExpenseDate =
+                                    item.TravelDate,
+
+                                ExpenseType =
+                                    expenseItem.ExpenseType,
+
+                                InvoiceNo =
+                                    expenseItem.InvoiceNo,
+
+                                Description =
+                                    expenseItem.Description,
+
+                                Purpose =
+                                    expenseItem.ExpensePurpose,
+
+                                Amount =
+                                    expenseItem.ExpenseAmount,
+
+                                created_at =
+                                    DateTime.Now,
+
+                                IsActive = true
+                            };
+
+                            _context.ClaimExpenses.Add(expense);
+                        }
                     }
                 }
+
+
+                // ==========================================
+                // SAVE UPDATED DETAILS
+                // ==========================================
 
                 await _context.SaveChangesAsync();
                 // ==========================================
@@ -4130,6 +6095,7 @@ Local Expense Claim Portal
             }
         }
 
+        [Authorize]
         [HttpGet("pending-approvals")]
         public async Task<IActionResult> GetPendingApprovals()
         {
@@ -4195,7 +6161,7 @@ Local Expense Claim Portal
             }
         }
 
-
+        [Authorize]
         [HttpGet("claim-approval-history/{claimId}")]
         public async Task<IActionResult> GetClaimApprovalHistory(int claimId)
         {
@@ -4245,8 +6211,8 @@ Local Expense Claim Portal
             }
         }
 
-     
 
+        [Authorize]
         [HttpGet("my-claims")]
         public async Task<IActionResult> GetMyClaims()
         {
@@ -4351,7 +6317,7 @@ Local Expense Claim Portal
                         ClaimMonth = claim.ClaimMonth,
                         TotalAmount = claim.TotalAmount ?? 0,
                         Status = claim.Status,
-                        Remarks = claim.Remarks,
+                       
                         CurrentApprovalLevel = claim.CurrentApprovalLevel,
 
                         LastActionBy = lastActionBy,
@@ -4382,14 +6348,20 @@ Local Expense Claim Portal
                 });
             }
         }
-
+        [Authorize]
         [HttpGet("claim-details/{claimId}")]
         public async Task<IActionResult> GetClaimDetails(int claimId)
         {
             try
             {
+                // =====================================
+                // CLAIM MASTER
+                // =====================================
+
                 var claim = await _context.ClaimMasters
-                    .FirstOrDefaultAsync(x => x.ClaimId == claimId);
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive);
 
                 if (claim == null)
                 {
@@ -4400,10 +6372,16 @@ Local Expense Claim Portal
                     });
                 }
 
+                // =====================================
+                // EMPLOYEE DETAILS
+                // =====================================
+
                 var employee = await _context.EmployeeMasters
-                 .FirstOrDefaultAsync(x => x.EmpId == claim.EmployeeId);
+                    .FirstOrDefaultAsync(x =>
+                        x.EmpId == claim.EmployeeId);
 
                 string? designationName = null;
+
 
                 if (employee?.DesignationId != null)
                 {
@@ -4413,62 +6391,79 @@ Local Expense Claim Portal
                         .FirstOrDefaultAsync();
                 }
 
-
                 // =====================================
-                // Travel Details
+                // TRAVEL DETAILS
+                // Only IsActive = true
                 // =====================================
-
                 var travels = await (
-    from t in _context.ClaimTravels
-    join v in _context.VehicleMaster
-        on t.VehicleTypeId equals v.VehicleId
-    join f in _context.FuelTypeMasters
-        on t.FuelTypeId equals f.FuelTypeId
-    where t.ClaimId == claimId
-    select new
-    {
-        t.TravelId,
+                    from t in _context.ClaimTravels
 
-        t.VehicleTypeId,
-        VehicleType = v.VehicleName,
+                    join v in _context.VehicleMaster
+                        on t.VehicleTypeId equals v.VehicleId
+                        into vehicleGroup
+                    from v in vehicleGroup.DefaultIfEmpty()
 
-        t.FuelTypeId,
-        FuelType = f.FuelTypeName,
+                    join f in _context.FuelTypeMasters
+                        on t.FuelTypeId equals f.FuelTypeId
+                        into fuelGroup
+                    from f in fuelGroup.DefaultIfEmpty()
 
-        t.VehicleDetailId,
-        t.VehicleNumber,
+                    where t.ClaimId == claimId
+                          && t.IsActive
 
-        t.AppliedRatePerKm,
+                    select new
+                    {
+                        t.TravelId,
 
-        t.TravelDate,
-        t.Purpose,
-        t.FromLocation,
-        t.ToLocation,
-        t.BusorTrainInvoiceNumber,
-        t.TaxiInvoiceNumber,
-        t.KmRun,
-        t.Amount,
-        t.Remarks
-    }).ToListAsync();
+                        t.VehicleTypeId,
+                        VehicleType = v != null
+                            ? v.VehicleName
+                            : null,
+
+                        t.FuelTypeId,
+                        FuelType = f != null
+                            ? f.FuelTypeName
+                            : null,
+
+                        t.VehicleDetailId,
+                        t.VehicleNumber,
+
+                        t.AppliedRatePerKm,
+
+                        t.TravelDate,
+                        t.Purpose,
+                        t.FromLocation,
+                        t.ToLocation,
+                        t.KmRun,
+                        t.Amount
+                    })
+                    .ToListAsync();
 
                 // =====================================
-                // Food Details
+                // FOOD DETAILS
+                // Only IsActive = true
                 // =====================================
 
                 var foods = await _context.ClaimFoods
-                    .Where(x => x.ClaimId == claimId)
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive)
                     .ToListAsync();
 
                 // =====================================
-                // Expense Details
+                // EXPENSE DETAILS
+                // Only IsActive = true
                 // =====================================
 
                 var expenses = await _context.ClaimExpenses
-                    .Where(x => x.ClaimId == claimId)
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive)
                     .ToListAsync();
 
                 // =====================================
-                // Documents
+                // DOCUMENTS
+                // Only IsActive = true
                 // =====================================
 
                 var documents = await _context.ClaimDocuments
@@ -4490,26 +6485,34 @@ Local Expense Claim Portal
                     .ToListAsync();
 
                 // =====================================
-                // Approval History
+                // APPROVAL HISTORY
+                // No IsActive condition
                 // =====================================
 
                 var approvals = await _context.ClaimApprovals
-                    .Where(x => x.ClaimId == claimId)
+                    .Where(x =>
+                        x.ClaimId == claimId)
                     .OrderBy(x => x.ApprovalLevel)
                     .Select(x => new
                     {
                         x.ApprovalLevel,
                         x.ApproverEmpId,
+
                         ApproverName = _context.EmployeeMasters
-            .Where(e => e.EmpId == x.ApproverEmpId)
-            .Select(e => e.FullName)
-            .FirstOrDefault(),
+                            .Where(e =>
+                                e.EmpId == x.ApproverEmpId)
+                            .Select(e => e.FullName)
+                            .FirstOrDefault(),
 
                         x.Status,
                         x.Remarks,
                         x.ActionDate
                     })
                     .ToListAsync();
+
+                // =====================================
+                // RESPONSE
+                // =====================================
 
                 return Ok(new
                 {
@@ -4518,27 +6521,42 @@ Local Expense Claim Portal
                     claim = new
                     {
                         claim.ClaimId,
-                        claim.Remarks,
+
                         claim.ClaimNo,
+
                         claim.EmployeeId,
+
                         EmployeeName = employee?.FullName,
+
                         Designation = designationName,
 
+                        employeeCode = employee?.EmployeeCode,
 
                         claim.ClaimMonth,
+
                         claim.TotalAmount,
+
                         claim.Status,
+
                         claim.CurrentApprovalLevel,
+
                         claim.CreatedAt,
+
                         claim.SubmittedAt,
+
                         claim.ApprovedAt,
+
                         claim.RejectedAt
                     },
 
                     travels,
+
                     foods,
+
                     expenses,
+
                     documents,
+
                     approvals
                 });
             }
@@ -4547,7 +6565,9 @@ Local Expense Claim Portal
                 return StatusCode(500, new
                 {
                     success = false,
+
                     message = "Error while fetching claim details.",
+
                     error = ex.InnerException?.Message ?? ex.Message
                 });
             }
@@ -4610,133 +6630,380 @@ Local Expense Claim Portal
         }
 }
 
-        
-
-
-        //--------------------------------LOcal Purchase Page--------------------//
-
-        //[Authorize]
-        [HttpPost("add-local-purchase")]
-        public async Task<IActionResult> AddLocalPurchase(LocalPurchase model)
+        [HttpGet("claim-report/{claimId}")]
+        public async Task<IActionResult> GetClaimReport(int claimId)
         {
             try
             {
-                _context.LocalPurchases.Add(model);
-                await _context.SaveChangesAsync();
+                // ============================================
+                // CLAIM MASTER
+                // ============================================
 
-                return Ok(model);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Error: {ex.Message}");
-            }
-        }
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive);
 
-        //[Authorize]
-        [HttpGet("get-all-local-purchases")]
-        public async Task<IActionResult> GetAllLocalPurchases()
-        {
-            try
-            {
-                var data = await _context.LocalPurchases
-                    .OrderByDescending(x => x.PurchaseId)
+                if (claim == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Claim not found."
+                    });
+                }
+
+
+                // ============================================
+                // EMPLOYEE
+                // ============================================
+
+                var employee = await _context.EmployeeMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.EmpId == claim.EmployeeId);
+
+                if (employee == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Employee not found."
+                    });
+                }
+
+
+                // ============================================
+                // DESIGNATION
+                // ============================================
+
+                string? designationName = null;
+
+                if (employee.DesignationId.HasValue)
+                {
+                    designationName = await _context.Designation
+                        .Where(x =>
+                            x.Id == employee.DesignationId.Value)
+                        .Select(x => x.Name)
+                        .FirstOrDefaultAsync();
+                }
+
+
+                // ============================================
+                // TRAVEL DETAILS
+                // ONLY ACTIVE RECORDS
+                // ============================================
+
+                var travelDetails = await
+                    (
+                        from t in _context.ClaimTravels
+
+                        join v in _context.VehicleMaster
+                            on t.VehicleTypeId equals v.VehicleId
+
+                        // LEFT JOIN FUEL TYPE
+                        // Because Taxi / Bus / Train may not need fuel
+                        join f in _context.FuelTypeMasters
+                            on t.FuelTypeId equals f.FuelTypeId
+                            into fuelGroup
+
+                        from f in fuelGroup.DefaultIfEmpty()
+
+                        where
+                            t.ClaimId == claimId &&
+                            t.IsActive
+
+                        select new TravelReportDto
+                        {
+                            // =====================================
+                            // TRAVEL
+                            // =====================================
+
+                            TravelId = t.TravelId,
+
+                            TravelDate = t.TravelDate,
+
+                            FromLocation = t.FromLocation,
+
+                            ToLocation = t.ToLocation,
+
+                            Purpose = t.Purpose,
+
+
+                            // =====================================
+                            // VEHICLE TYPE
+                            // =====================================
+
+                            VehicleType = v.VehicleName,
+
+
+                            // =====================================
+                            // FUEL TYPE
+                            //
+                            // Bike = 2
+                            // Car  = 3
+                            //
+                            // Taxi / Bus / Train = "-"
+                            // =====================================
+
+                            FuelType =
+                                (t.VehicleTypeId == 2 ||
+                                 t.VehicleTypeId == 3)
+                                    ? (f != null
+                                        ? f.FuelTypeName
+                                        : "-")
+                                    : "-",
+
+
+                            // =====================================
+                            // VEHICLE NUMBER
+                            //
+                            // Bike / Car:
+                            // Actual number -> show number
+                            //
+                            // Taxi:
+                            // "Taxi" -> "-"
+                            //
+                            // Bus / Train:
+                            // "Bus / Train" -> "-"
+                            // =====================================
+
+                            VehicleNumber =
+                                string.IsNullOrWhiteSpace(t.VehicleNumber) ||
+                                t.VehicleNumber.Trim()
+                                    .Equals(
+                                        v.VehicleName,
+                                        StringComparison.OrdinalIgnoreCase)
+                                    ? null
+                                    : t.VehicleNumber,
+
+
+                            // =====================================
+                            // OTHER DETAILS
+                            // =====================================
+
+                            KmRun = t.KmRun,
+
+                            Amount = t.Amount,
+
+                            AppliedRatePerKm = t.AppliedRatePerKm
+                        }
+                    )
                     .ToListAsync();
 
-                return Ok(data);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Error: {ex.Message}");
-            }
-        }
 
-        //[Authorize]
-        [HttpGet("get-local-purchase/{id}")]
-        public async Task<IActionResult> GetLocalPurchase(int id)
-        {
-            try
-            {
-                var data = await _context.LocalPurchases.FindAsync(id);
+                // ============================================
+                // VEHICLE TYPE + VEHICLE NUMBER
+                // ============================================
 
-                if (data == null)
-                    return NotFound("Data not found");
+                var vehicleDetails = travelDetails
+                    .Where(x =>
+                        !string.IsNullOrWhiteSpace(x.VehicleType) &&
+                        !string.IsNullOrWhiteSpace(x.VehicleNumber))
+                    .Select(x =>
+                        $"{x.VehicleType} - {x.VehicleNumber}")
+                    .Distinct()
+                    .ToList();
 
-                return Ok(data);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Error: {ex.Message}");
-            }
-        }
 
-        //[Authorize]
-        [HttpPut("update-local-purchase/{id}")]
-        public async Task<IActionResult> UpdateLocalPurchase(int id, LocalPurchase purchase)
-        {
-            try
-            {
-                var data = await _context.LocalPurchases.FindAsync(id);
+                string vehicleNo =
+                    vehicleDetails.Any()
+                        ? string.Join(" / ", vehicleDetails)
+                        : "-";
 
-                if (data == null)
-                    return NotFound("Data not found");
 
-                data.CustomerName = purchase.CustomerName;
-                data.Location = purchase.Location;
-                data.Amount = purchase.Amount;
-                data.Remarks = purchase.Remarks;
+                // ============================================
+                // FOOD DETAILS
+                // ONLY ACTIVE RECORDS
+                // ============================================
 
-                await _context.SaveChangesAsync();
+                var foodDetails = await _context.ClaimFoods
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive)
+                    .Select(x => new FoodReportDto
+                    {
+                        FoodDate = x.FoodDate,
 
-                return Ok(data);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Error: {ex.Message}");
-            }
-        }
+                        FoodTypeId = x.FoodTypeId,
 
-        //[Authorize]
-        [HttpDelete("delete-local-purchase/{id}")]
-        public async Task<IActionResult> DeleteLocalPurchase(int id)
-        {
-            try
-            {
-                var data = await _context.LocalPurchases.FindAsync(id);
-
-                if (data == null)
-                    return NotFound("Data not found");
-
-                _context.LocalPurchases.Remove(data);
-                await _context.SaveChangesAsync();
-
-                return Ok("Deleted successfully");
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Error: {ex.Message}");
-            }
-        }
-
-        //[Authorize]
-        [HttpGet("get-local-purchase-by-year/{year}")]
-        public async Task<IActionResult> GetLocalPurchaseByYear(int year)
-        {
-            try
-            {
-                var data = await _context.LocalPurchases
-                    .Where(x => x.Year == year)
+                        Amount = x.Amount
+                    })
                     .ToListAsync();
 
-                return Ok(data);
+
+                // ============================================
+                // EXPENSE DETAILS
+                // ONLY ACTIVE RECORDS
+                // ============================================
+
+                var expenseDetails = await _context.ClaimExpenses
+                    .Where(x =>
+                        x.ClaimId == claimId &&
+                        x.IsActive)
+                    .Select(x => new ExpenseReportDto
+                    {
+                        ExpenseId = x.ExpenseId,
+
+                        ExpenseDate = x.ExpenseDate,
+
+                        ExpenseType = x.ExpenseType,
+
+                        InvoiceNo = x.InvoiceNo,
+
+                        Description = x.Description,
+
+                        Purpose = x.Purpose,
+
+                        Amount = x.Amount ?? 0
+                    })
+                    .ToListAsync();
+
+
+                // ============================================
+                // APPROVAL STATUS
+                // ============================================
+
+                var approvalStatus = await
+                    (
+                        from a in _context.ClaimApprovals
+
+                        join e in _context.EmployeeMasters
+                            on a.ApproverEmpId equals e.EmpId
+                            into approverGroup
+
+                        from e in approverGroup.DefaultIfEmpty()
+
+                        where a.ClaimId == claimId
+
+                        orderby a.ApprovalLevel
+
+                        select new ApprovalReportDto
+                        {
+                            ApprovalLevel = a.ApprovalLevel,
+
+                            ApproverName = e != null
+                                ? e.FullName
+                                : "-",
+
+                            Status = a.Status,
+
+                            Remarks = a.Remarks,
+
+                            ActionDate = a.ActionDate
+                        }
+                    )
+                    .ToListAsync();
+
+
+                // ============================================
+                // MONTH FORMAT
+                // Example: Jul-26
+                // ============================================
+
+                string monthText =
+                    claim.ClaimMonth.ToString("MMM-yy");
+
+
+                // ============================================
+                // BUILD REPORT
+                // ============================================
+
+                var report = new ClaimReportDto
+                {
+                    // =========================================
+                    // EMPLOYEE
+                    // =========================================
+
+                    Employee = new EmployeeReportDto
+                    {
+                        Name = employee.FullName,
+
+                        EmployeeCode = employee.EmployeeCode,
+
+                        Designation = designationName,
+
+                        VehicleNo = vehicleNo
+                    },
+
+
+                    // =========================================
+                    // CLAIM
+                    // =========================================
+
+                    Claim = new ClaimReportHeaderDto
+                    {
+                        ClaimId = claim.ClaimId,
+
+                        ClaimNo = claim.ClaimNo,
+
+                        ClaimMonth = claim.ClaimMonth,
+
+                        Month = monthText,
+
+                        TotalAmount = claim.TotalAmount ?? 0
+                    },
+
+
+                    // =========================================
+                    // APPROVAL
+                    // =========================================
+
+                    ApprovalStatus = approvalStatus,
+
+
+                    // =========================================
+                    // TRAVEL
+                    // =========================================
+
+                    TravelDetails = travelDetails,
+
+
+                    // =========================================
+                    // FOOD
+                    // =========================================
+
+                    FoodDetails = foodDetails,
+
+
+                    // =========================================
+                    // EXPENSE
+                    // =========================================
+
+                    ExpenseSummary = expenseDetails
+                };
+
+
+                // ============================================
+                // RESPONSE
+                // ============================================
+
+                return Ok(new
+                {
+                    success = true,
+
+                    message =
+                        "Claim report details fetched successfully.",
+
+                    data = report
+                });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"Error: {ex.Message}");
+                return StatusCode(500, new
+                {
+                    success = false,
+
+                    message =
+                        "Error while fetching claim report.",
+
+                    error =
+                        ex.InnerException?.Message
+                        ?? ex.Message
+                });
             }
         }
 
-
-        //---------------Expense Tracker------------------------------//
+        //---------------Expense Tracker  Module..------------------------------//
 
 
 
