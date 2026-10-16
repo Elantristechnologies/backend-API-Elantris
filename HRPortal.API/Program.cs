@@ -24,24 +24,47 @@ builder.Services.AddControllers();
 var jwtSettings = builder.Configuration.GetSection("Jwt");
 var key = Encoding.UTF8.GetBytes(jwtSettings["Key"]!);
 
-builder.Services.AddAuthentication(options =>
-{
-    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-})
-.AddJwtBearer(options =>
-{
-    options.TokenValidationParameters = new TokenValidationParameters
+//builder.Services.AddAuthentication(options =>
+//{
+//    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+//    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+//})
+//.AddJwtBearer(options =>
+//{
+//    options.TokenValidationParameters = new TokenValidationParameters
+//    {
+//        ValidateIssuer = true,
+//        ValidateAudience = true,
+//        ValidateLifetime = true,
+//        ValidateIssuerSigningKey = true,
+//        ValidIssuer = jwtSettings["Issuer"],
+//        ValidAudience = jwtSettings["Audience"],
+//        IssuerSigningKey = new SymmetricSecurityKey(key)
+//    };
+//});
+
+// Program.cs அல்லது Startup.cs
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
     {
-        ValidateIssuer = true,
-        ValidateAudience = true,
-        ValidateLifetime = true,
-        ValidateIssuerSigningKey = true,
-        ValidIssuer = jwtSettings["Issuer"],
-        ValidAudience = jwtSettings["Audience"],
-        IssuerSigningKey = new SymmetricSecurityKey(key)
-    };
-});
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            // 1. முக்கியம்: Audience check-ஐ false பண்ண வேண்டும் (இதுதான் இப்போது error தருகிறது)
+            ValidateAudience = false,
+
+            // 2. Issuer check-ஐயும் false பண்ணலாம் (அல்லது Suite Backend-ன் Issuer-ஐ அனுமதிக்கலாம்)
+            ValidateIssuer = false,
+
+            // 3. Token expiry check
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero,
+
+            // 4. Suite Backend-ல் என்ன Secret Key வைத்திருக்கிறார்களோ, அதே Key-ஐ இங்கும் வைக்க வேண்டும்
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]))
+        };
+    });
 builder.Services.AddAuthorization();
 
 
@@ -68,6 +91,10 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
         builder.Configuration.GetConnectionString("DefaultConnection")
     )
 );
+
+builder.Services.AddDbContext<CommonDbContext>(options =>
+    options.UseSqlServer(
+        builder.Configuration.GetConnectionString("CommonDb")));
 
 //----------Email setUp----//
 

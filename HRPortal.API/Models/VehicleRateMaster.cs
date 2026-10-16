@@ -21,7 +21,10 @@ public class VehicleRateMaster
 
         public int CreatedBy { get; set; }
 
-        public bool IsActive { get; set; } = true;
+        [Column("OrganizationId")]
+        public int OrganizationId { get; set; }
+
+       public bool IsActive { get; set; } = true;
 
         public DateTime CreatedDate { get; set; } = DateTime.Now;
     }

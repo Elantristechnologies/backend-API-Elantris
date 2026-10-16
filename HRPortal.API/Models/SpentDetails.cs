@@ -27,5 +27,7 @@ namespace HRPortal.API.Models
         public string? EmpCode { get; set; }
         public string? EmployeeName { get; set; }
         public string? PurchaseTypeName { get; set; }
+
+        public int? OrganizationId { get; set; }
     }
 }

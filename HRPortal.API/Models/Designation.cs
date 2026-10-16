@@ -22,6 +22,8 @@ namespace HRPortal.API.Models
         [Column("IsReportingManager")]
         public bool IsReportingManager { get; set; }
 
+        public int? OrganizationId { get; set; }
+
 
     }
 }

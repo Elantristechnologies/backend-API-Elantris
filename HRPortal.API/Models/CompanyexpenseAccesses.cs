@@ -1,25 +1,20 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
-namespace HRPortal.API.Models
+
+[Table("Companyexpense_Access")]
+public class CompanyexpenseAccesses
 {
+    [Key]
+    public int Id { get; set; }
 
-    [Keyless]
-    [Table("Companyexpense_Access")]
-    public class CompanyexpenseAccesses
-    {
-        
-        //public int Id { get; set; }
-        public string Status { get; set; }
-        public decimal TotalAmount { get; set; }
+    public int RoleId { get; set; }
 
-        public int DesignationId { get; set; }
-        //public int empid { get; set; }
+    public bool Action { get; set; }
 
-        public bool Action { get; set; }
+    public int OrganizationId { get; set; }
 
-        //public bool IsActive { get; set; }
+    public bool IsActive { get; set; }
 
-        //desigid????
-    }
+    public DateTime CreatedDate { get; set; }
 }

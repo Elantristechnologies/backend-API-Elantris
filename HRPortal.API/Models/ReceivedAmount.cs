@@ -30,5 +30,7 @@ namespace HRPortal.API.Models
         [Column("created_to")]
         public int? CreatedTo { get; set; }
 
+        public int OrganizationId { get; set; }
+
     }
 }

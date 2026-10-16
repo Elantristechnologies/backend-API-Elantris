@@ -1,5 +1,8 @@
-﻿namespace HRPortal.API.DTOs
+﻿using System.ComponentModel.DataAnnotations.Schema;
+
+namespace HRPortal.API.DTOs
 {
+
     public class LoginResponseDto
     {
         public int? EmpId { get; set; }
@@ -25,6 +28,8 @@
 
         public string? Role { get; set; }
 
+        public int? RoleId { get; set; }
+
         public int IsSuccess { get; set; }
         public string? Message { get; set; }
 
@@ -32,6 +37,12 @@
 
         public string? MaritalStatus { get; set; }
 
-        public int? OrganizationId { get; set; }
+        [Column("org_id")]
+        public int? orgId { get; set; }
+        [Column("User_Id")]
+
+        public int? UserId { get; set; }
+        [Column("User_Name")]
+        public string? UserName { get; set; }
     }
 }

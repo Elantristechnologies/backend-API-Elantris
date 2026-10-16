@@ -14,5 +14,7 @@ namespace HRPortal.API.Models
 
         [Column("created_at")]
         public DateTime? Created_At { get; set; }
+
+        public int OrganizationId { get; set; }
     }
 }

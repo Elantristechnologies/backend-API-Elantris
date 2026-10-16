@@ -46,7 +46,14 @@ namespace HRPortal.API.Data
         public DbSet<CategoryMaster> Category_Master { get; set; }
 
         //-----------------------------Travles -----------------------------
-        
+
+        //--------Approval Matrix----------------//
+        public DbSet<DepartmentApprovalConfig> DepartmentApprovalConfigs { get; set; }
+
+        public DbSet<EmployeeApprovalConfig> EmployeeApprovalConfigs { get; set; }
+
+        public DbSet<EmployeeApprovalConfigApprover> EmployeeApprovalConfigApprovers { get; set; }
+
         public DbSet<VehicleMaster> VehicleMaster { get; set; }
 
         public DbSet<VehicleRateMaster> VehicleRateMasters { get; set; }
@@ -69,6 +76,11 @@ namespace HRPortal.API.Data
         //-----------NumberSeriesConfiguration-----------
         public DbSet<NumberSeriesConfiguration> NumberSeriesConfigurations { get; set; }
 
+        //--------Module Basedd Accesss---------------
+
+        public DbSet<OrganizationModule> OrganizationModules { get; set; }
+
+        public DbSet<ModuleMaster> ModuleMasters { get; set; }
         //--------------------Expenses tracker ----------
         public DbSet<ExpenseMaster> ExpenseMaster { get; set; }
         public DbSet<ExpenseMasterResponse> ExpenseMasterResponse { get; set; }
@@ -94,6 +106,8 @@ namespace HRPortal.API.Data
 
         public DbSet<Designation> Designations { get; set; }  // muthu
 
+        public DbSet<RoleMaster> RoleMasters { get; set; }
+
 
 
         public DbSet<EmployeeEmploymentInformation> EmployeeEmploymentInformations { get; set; }  // muthu
@@ -102,6 +116,10 @@ namespace HRPortal.API.Data
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<EmployeeAccessResultsdto>().HasNoKey();
+            modelBuilder.Entity<ModuleMaster>()
+    .ToTable("Module_Master");
+            modelBuilder.Entity<UsersMaster>()
+    .ToTable("Users_Master");
             modelBuilder.Entity<PayslipDTO>().HasNoKey();
             modelBuilder.Entity<LoginResponseDto>().HasNoKey();
             modelBuilder.Entity<FoodTypeMaster>(entity =>
@@ -173,10 +191,31 @@ namespace HRPortal.API.Data
                 .ValueGeneratedOnAdd();
 
 
-            modelBuilder.Entity<CompanyexpenseAccesses>().HasNoKey();
+            //--- for Aproval matrix---------
+
+            modelBuilder.Entity<DepartmentApprovalConfig>()
+       .ToTable("Department_Approval_Config");
+
+            modelBuilder.Entity<DepartmentApprovalConfig>()
+                .Property(x => x.CreatedDate)
+                .HasDefaultValueSql("GETUTCDATE()");
+
+            modelBuilder.Entity<EmployeeApprovalConfig>()
+                .ToTable("Employee_Approval_Config");
+
+            modelBuilder.Entity<EmployeeApprovalConfig>()
+                .Property(x => x.CreatedDate)
+                .HasDefaultValueSql("GETUTCDATE()");
+
+            modelBuilder.Entity<EmployeeApprovalConfigApprover>()
+                .ToTable("Employee_Approval_Config_Approver");
+
+            modelBuilder.Entity<EmployeeApprovalConfigApprover>()
+                .Property(x => x.CreatedDate)
+                .HasDefaultValueSql("GETUTCDATE()");
 
 
-            
+
         }
     }
 }

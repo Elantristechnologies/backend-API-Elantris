@@ -21,6 +21,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Runtime.InteropServices;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 
 
 namespace HRPortal.API.Controllers
@@ -32,389 +33,740 @@ namespace HRPortal.API.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly IConfiguration _configuration;
+        private readonly CommonDbContext _commonContext;
 
-
-        public EmployeeMasterController(ApplicationDbContext context, IConfiguration configuration)
+        public EmployeeMasterController(ApplicationDbContext context, CommonDbContext commonContext, IConfiguration configuration)
         {
             _context = context;
+            _commonContext = commonContext;
             _configuration = configuration;
 
         }
 
 
-        [AllowAnonymous]
-        [HttpPost("Adminregister")]
-        public async Task<IActionResult> Register([FromBody] RegisterDto request)
-        {
-            try
-            {
-                var existingUser = await _context.UsersMaster
-                    .FirstOrDefaultAsync(x => x.Email == request.Email);
 
-                if (existingUser != null)
-                {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = "Email already exists"
-                    });
-                }
 
-                var user = new UsersMaster
-                {
-                    Name = request.Name,
-                    Email = request.Email,
-                    PasswordHash = request.Password,
-                    Role = "Admin",
-                    OrganizationId = null,
-                    IsActive = true
-                };
-
-                _context.UsersMaster.Add(user);
-
-                await _context.SaveChangesAsync();
-
-                return Ok(new
-                {
-                    success = true,
-                    message = "Registration Successful"
-                });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "Registration Failed",
-                    error = ex.Message
-                });
-            }
-        }
-
-
-        //   [AllowAnonymous]
-        //   [HttpPost("login")]
-        //   public async Task<IActionResult> Login(
-        //string userName,
-        //string password,
-        //int checkType)
-        //   {
-        //       try
-        //       {
-        //           HrAdmin? hrAdmin = null;
-
-        //           // 🔹 Execute SP
-        //           var employees = await _context.LoginResponseDtos
-        //               .FromSqlRaw(
-        //                   "EXEC sp_Login @UserName, @Password",
-        //                   new SqlParameter("@UserName", userName),
-        //                   new SqlParameter("@Password", password)
-        //               )
-        //               .ToListAsync();
-
-        //           var employee = employees.FirstOrDefault();
-
-        //           // 🔹 Invalid Login
-        //           if (employee == null)
-        //           {
-        //               return Unauthorized(new
-        //               {
-        //                   success = false,
-        //                   message = "Invalid Username or Password"
-        //               });
-        //           }
-
-        //           // 🔹 Role
-        //           string role = employee.Role ?? "Employee";
-
-        //           // 🔹 HR Details
-        //           if (role == "HR")
-        //           {
-        //               hrAdmin = await _context.HrAdmins
-        //                   .FirstOrDefaultAsync(x =>
-        //                       x.empcode == employee.EmployeeCode);
-        //           }
-
-        //           // 🔹 JWT Token
-        //           var token = GenerateJwtToken(
-        //               employee.EmailId,
-        //               role,
-        //               employee.OrganizationId                   
-        //           );
-
-        //           // 🔹 Final Response
-        //           return Ok(new
-        //           {
-        //               success = true,
-
-        //               message = "Login successful",
-
-        //               role = role,
-
-        //               token = token,
-
-        //               employee = new
-        //               {
-        //                   employee.EmpId,
-
-        //                   employee.EmployeeCode,
-
-        //                   employee.FullName,
-
-        //                   employee.EmailId,
-
-        //                   employee.Phone,
-
-        //                   employee.DepartmentId,
-
-        //                   employee.DepartmentName,
-
-        //                   employee.DesignationId,
-
-        //                   employee.DesignationName,
-
-        //                   employee.ReportingManagerId,
-
-        //                   employee.ReportingManager_code,
-
-        //                   employee.ReportingManager_name,
-
-        //                   employee.DateOfJoining,
-
-        //                   employee.CategoryId,
-
-        //                   employee.ConfirmationDate,
-
-        //                   employee.GradeId,
-
-        //                   employee.Gender,
-
-        //                   employee.MaritalStatus,
-
-        //                   employee.OrganizationId
-        //               },
-
-        //               hrAdmin = hrAdmin
-        //           });
-        //       }
-        //       catch (Exception ex)
-        //       {
-        //           return StatusCode(500, new
-        //           {
-        //               success = false,
-
-        //               message = "Error occurred",
-
-        //               error = ex.Message
-        //           });
-        //       }
-        //   }
-
-        //    [AllowAnonymous]
-        //    [HttpPost("login")]
-        //    public async Task<IActionResult> Login(
-        //string userName,
-        //string password,
-        //int checkType)
-        //    {
-        //        try
-        //        {
-        //            HrAdmin? hrAdmin = null;
-
-        //            var employees = await _context.LoginResponseDtos
-        //                .FromSqlRaw(
-        //                    "EXEC sp_Login @UserName, @Password",
-        //                    new SqlParameter("@UserName", userName),
-        //                    new SqlParameter("@Password", password)
-        //                )
-        //                .ToListAsync();
-
-        //            var employee = employees.FirstOrDefault();
-
-        //            if (employee == null || employee.IsSuccess == 0)
-        //            {
-        //                return Unauthorized(new
-        //                {
-        //                    success = false,
-        //                    message = "Invalid Username or Password"
-        //                });
-        //            }
-
-        //            string role = employee.Role ?? "Employee";
-
-        //            if (role == "HR")
-        //            {
-        //                hrAdmin = await _context.HrAdmins
-        //                    .FirstOrDefaultAsync(x =>
-        //                        x.empcode == employee.EmployeeCode);
-        //            }
-
-        //            var token = GenerateJwtToken(
-        //                employee.EmailId,
-        //                role,
-        //                employee.OrganizationId
-        //            );
-
-        //            bool isOrganizationSetupRequired =
-        //                employee.OrganizationId == null;
-
-        //            bool isProfileSetupRequired =
-        //                string.IsNullOrEmpty(employee.Phone) ||
-        //                employee.DepartmentId == null ||
-        //                employee.DesignationId == null ||
-        //                employee.DateOfJoining == null;
-
-        //            return Ok(new
-        //            {
-        //                success = true,
-
-        //                message = "Login successful",
-
-        //                role = role,
-
-        //                token = token,
-
-        //                IsOrganizationSetupRequired = isOrganizationSetupRequired,
-
-        //                IsProfileSetupRequired = isProfileSetupRequired,
-
-        //                employee = new
-        //                {
-        //                    employee.EmpId,
-
-        //                    employee.EmployeeCode,
-
-        //                    employee.FullName,
-
-        //                    employee.EmailId,
-
-        //                    employee.Phone,
-
-        //                    employee.DepartmentId,
-
-        //                    employee.DepartmentName,
-
-        //                    employee.DesignationId,
-
-        //                    employee.DesignationName,
-
-        //                    employee.ReportingManagerId,
-
-        //                    employee.ReportingManager_code,
-
-        //                    employee.ReportingManager_name,
-
-        //                    employee.DateOfJoining,
-
-        //                    employee.CategoryId,
-
-        //                    employee.ConfirmationDate,
-
-        //                    employee.GradeId,
-
-        //                    employee.Gender,
-
-        //                    employee.MaritalStatus,
-
-        //                    employee.OrganizationId
-        //                },
-
-        //                hrAdmin = hrAdmin
-        //            });
-        //        }
-        //        catch (Exception ex)
-        //        {
-        //            return StatusCode(500, new
-        //            {
-        //                success = false,
-        //                message = "Error occurred",
-        //                error = ex.Message
-        //            });
-        //        }
-        //    }
 
         [AllowAnonymous]
         [HttpPost("login")]
         public async Task<IActionResult> Login(
-    string userName,
-    string password,
-    int checkType)
+            [FromQuery] string userName,
+            [FromQuery] string password)
         {
             try
             {
-                var employees = await _context.LoginResponseDtos
-                .FromSqlRaw(
-                "EXEC sp_Login @UserName, @Password",
-                new SqlParameter("@UserName", userName),
-                new SqlParameter("@Password", password)
-                )
-                .ToListAsync();
+                // ==========================================
+                // 1. VALIDATION
+                // ==========================================
 
-                var employee = employees.FirstOrDefault();
+                if (string.IsNullOrWhiteSpace(userName))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Username is required."
+                    });
+                }
 
-                if (employee == null || employee.IsSuccess == 0)
+                if (string.IsNullOrWhiteSpace(password))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Password is required."
+                    });
+                }
+
+                string loginValue = userName.Trim();
+
+
+                // ==========================================
+                // 2. CHECK company_users - COMMON DB
+                // ==========================================
+
+                var companyUser =
+                    await _commonContext.CompanyUsers
+                        .FirstOrDefaultAsync(x =>
+                            (x.Email != null &&
+                             x.Email.ToLower() ==
+                                 loginValue.ToLower())
+                            ||
+                            (x.EmpCode != null &&
+                             x.EmpCode.ToLower() ==
+                                 loginValue.ToLower())
+                        );
+
+
+                // ==========================================
+                // 3. CHECK user_admin - COMMON DB
+                // ==========================================
+
+                var adminUser =
+                    await _commonContext.UsersMaster
+                        .FirstOrDefaultAsync(x =>
+                            (x.EMail != null &&
+                             x.EMail.ToLower() ==
+                                 loginValue.ToLower())
+                            ||
+                            (x.UserName != null &&
+                             x.UserName.ToLower() ==
+                                 loginValue.ToLower())
+                        );
+
+
+                // ==========================================
+                // 4. USER NOT FOUND
+                // ==========================================
+
+                if (companyUser == null &&
+                    adminUser == null)
                 {
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "Invalid Username or Password"
+                        message = "Invalid username or password."
                     });
                 }
 
-                string role = employee.Role ?? "Employee";
 
-                var token = GenerateJwtToken(
-    employee.EmailId,
-    role,
-    employee.OrganizationId,
-    employee.EmpId
-);
+                // ==========================================
+                // 5. PASSWORD VALIDATION
+                // ==========================================
 
-                bool isOrganizationSetupRequired =
-                    employee.OrganizationId == null;
+                bool companyPasswordValid = false;
+                bool adminPasswordValid = false;
 
-                bool isProfileSetupRequired =
-                    string.IsNullOrEmpty(employee.Phone) ||
-                    employee.DepartmentId == null ||
-                    employee.DesignationId == null ||
-                    employee.DateOfJoining == null;
+
+                // ------------------------------------------
+                // COMPANY USER PASSWORD
+                // ------------------------------------------
+
+                if (companyUser != null)
+                {
+                    companyPasswordValid =
+                        VerifyPasswordFlexible(
+                            password,
+                            companyUser.Password);
+                }
+
+
+                // ------------------------------------------
+                // ADMIN USER PASSWORD
+                // ------------------------------------------
+
+                if (adminUser != null)
+                {
+                    adminPasswordValid =
+                        VerifyPasswordFlexible(
+                            password,
+                            adminUser.Password);
+                }
+
+
+                // ==========================================
+                // 6. INVALID PASSWORD
+                // ==========================================
+
+                if (!companyPasswordValid &&
+                    !adminPasswordValid)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid username or password."
+                    });
+                }
+
+
+                // ==========================================
+                // 7. COMMON VARIABLES
+                // ==========================================
+
+                int userId = 0;
+                int empId = 0;
+                int organizationId = 0;
+
+                string empCode = string.Empty;
+                string finalUserName = string.Empty;
+                string email = string.Empty;
+                string role = "Employee";
+                string companyName = string.Empty;
+
+
+                // ==========================================
+                // 8. MODULE VARIABLES
+                // ==========================================
+
+                var allowedModules =
+                    new List<string>();
+
+                var allowedPortals =
+                    new List<string>();
+
+                var portalRoles =
+                    new Dictionary<string, string>(
+                        StringComparer.OrdinalIgnoreCase);
+
+
+                // ==========================================
+                // 9. FUTURE REPORTING MANAGER VARIABLES
+                // ==========================================
+                //
+                // Ippo DB-la reporting manager column illa.
+                // Future-la company_users-la add pannumbothu
+                // inga values assign pannalam.
+                //
+
+                int? reportingManagerId = null;
+
+                string? reportingManagerCode = null;
+
+                string? reportingManagerName = null;
+
+
+                // ==========================================
+                // 10. COMPANY USER
+                // COMMON DB ONLY
+                // ==========================================
+
+                if (companyPasswordValid &&
+                    companyUser != null)
+                {
+                    // --------------------------------------
+                    // Basic details from company_users
+                    // --------------------------------------
+
+                    userId =
+                        companyUser.EmpId;
+
+                    empId =
+                        companyUser.EmpId;
+
+                    empCode =
+                        companyUser.EmpCode ??
+                        string.Empty;
+
+                    finalUserName =
+                        companyUser.FullName ??
+                        companyUser.Email ??
+                        string.Empty;
+
+                    email =
+                        companyUser.Email ??
+                        string.Empty;
+
+                    organizationId =
+                        companyUser.OrgId ?? 0;
+
+
+                    // --------------------------------------
+                    // GLOBAL ROLE
+                    // company_users.PrimaryTitle
+                    // --------------------------------------
+
+                    role =
+                        !string.IsNullOrWhiteSpace(
+                            companyUser.PrimaryTitle)
+                        ? companyUser.PrimaryTitle
+                        : "Employee";
+
+
+                    // --------------------------------------
+                    // Parse portal_roles
+                    // --------------------------------------
+
+                    if (!string.IsNullOrWhiteSpace(
+                            companyUser.PortalRoles))
+                    {
+                        try
+                        {
+                            using var document =
+                                JsonDocument.Parse(
+                                    companyUser.PortalRoles);
+
+                            if (document.RootElement.ValueKind ==
+                                JsonValueKind.Object)
+                            {
+                                foreach (var property in
+                                         document.RootElement
+                                             .EnumerateObject())
+                                {
+                                    if (property.Value.ValueKind ==
+                                        JsonValueKind.String)
+                                    {
+                                        string portal =
+                                            property.Name;
+
+                                        string? portalRole =
+                                            property.Value
+                                                .GetString();
+
+                                        if (!string.IsNullOrWhiteSpace(
+                                                portalRole))
+                                        {
+                                            portalRoles[portal] =
+                                                portalRole;
+
+                                            if (!allowedPortals
+                                                    .Any(x =>
+                                                        x.Equals(
+                                                            portal,
+                                                            StringComparison
+                                                                .OrdinalIgnoreCase)))
+                                            {
+                                                allowedPortals.Add(
+                                                    portal);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // Invalid portal_roles JSON
+                        }
+                    }
+                }
+
+
+                // ==========================================
+                // 11. ADMIN USER
+                // COMMON DB ONLY
+                // ==========================================
+
+                if (!companyPasswordValid &&
+                    adminPasswordValid &&
+                    adminUser != null)
+                {
+                    userId =
+                        adminUser.UserId;
+
+                    empId = 0;
+
+                    empCode =
+                        string.Empty;
+
+                    finalUserName =
+                        adminUser.UserName ??
+                        string.Empty;
+
+                    email =
+                        adminUser.EMail ??
+                        string.Empty;
+
+                    organizationId =
+                        adminUser.OrgId ?? 0;
+
+                    companyName =
+                        adminUser.CompName ??
+                        string.Empty;
+
+                    role = "Admin";
+                }
+
+
+                // ==========================================
+                // 12. ORGANIZATION VALIDATION
+                // ==========================================
+
+                if (organizationId <= 0)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message =
+                            "Organization is not assigned to this user."
+                    });
+                }
+
+
+                // ==========================================
+                // 13. GET ORGANIZATION MODULES
+                // COMMON DB
+                // ==========================================
+
+                var modules =
+                    await _commonContext.OrganizationModules
+                        .Where(x =>
+                            x.OrgId == organizationId &&
+                            x.IsActive)
+                        .Join(
+                            _commonContext.ModuleMasters
+                                .Where(x => x.IsActive),
+
+                            om => om.ModuleCode,
+
+                            mm => mm.ModuleCode,
+
+                            (om, mm) => new
+                            {
+                                mm.ModuleId,
+                                mm.ModuleCode,
+                                mm.ModuleName
+                            })
+                        .OrderBy(x => x.ModuleId)
+                        .ToListAsync();
+
+
+                // ==========================================
+                // 14. ALLOWED MODULES
+                // ==========================================
+
+                allowedModules =
+                    modules
+                        .Select(x => x.ModuleCode)
+                        .Where(x =>
+                            !string.IsNullOrWhiteSpace(x))
+                        .Distinct(
+                            StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+
+                // ==========================================
+                // 15. ADMIN PORTALS
+                // ==========================================
+
+                if (!companyPasswordValid &&
+                    adminPasswordValid &&
+                    adminUser != null)
+                {
+                    allowedPortals =
+                        allowedModules.ToList();
+
+                    portalRoles =
+                        allowedPortals
+                            .ToDictionary(
+                                x => x,
+                                x => "Admin",
+                                StringComparer.OrdinalIgnoreCase);
+                }
+
+
+                // ==========================================
+                // 16. JWT CLAIMS
+                // ==========================================
+
+                var claims =
+                    new List<Claim>
+                    {
+                // ------------------------------
+                // Subject / Email
+                // ------------------------------
+
+                new Claim(
+                    JwtRegisteredClaimNames.Sub,
+                    email),
+
+                // ------------------------------
+                // User ID
+                // ------------------------------
+
+                new Claim(
+                    "userId",
+                    userId.ToString()),
+
+                // ------------------------------
+                // Organization
+                // ------------------------------
+
+                new Claim(
+                    "orgId",
+                    organizationId.ToString()),
+
+                // ------------------------------
+                // GLOBAL ROLE
+                // ------------------------------
+
+                new Claim(
+                    "role",
+                    role),
+
+                new Claim(
+                    ClaimTypes.Role,
+                    role),
+
+                // ------------------------------
+                // Name
+                // ------------------------------
+
+                new Claim(
+                    ClaimTypes.Name,
+                    finalUserName),
+
+                new Claim(
+                    "name",
+                    finalUserName),
+
+                // ------------------------------
+                // Email
+                // ------------------------------
+
+                new Claim(
+                    ClaimTypes.Email,
+                    email),
+
+                // ------------------------------
+                // DB TYPE
+                // ------------------------------
+
+                new Claim(
+                    "dbType",
+                    "SQL Server"),
+
+                // ------------------------------
+                // APPROVAL STATUS
+                // ------------------------------
+
+                new Claim(
+                    "isApproved",
+                    "true")
+                    };
+
+
+                // ==========================================
+                // 16A. EMPLOYEE ID
+                // ==========================================
+
+                if (empId > 0)
+                {
+                    // Common token style
+                    claims.Add(
+                        new Claim(
+                            "emp_id",
+                            empId.ToString()));
+
+                    claims.Add(
+                        new Claim(
+                            "EmpId",
+                            empId.ToString()));
+                }
+
+
+                // ==========================================
+                // 16B. EMPLOYEE CODE
+                // ==========================================
+
+                if (!string.IsNullOrWhiteSpace(empCode))
+                {
+                    claims.Add(
+                        new Claim(
+                            "emp_code",
+                            empCode));
+
+                    claims.Add(
+                        new Claim(
+                            "EmpCode",
+                            empCode));
+                }
+
+
+                // ==========================================
+                // 16C. MODULES
+                // ==========================================
+
+                if (allowedModules.Count > 0)
+                {
+                    claims.Add(
+                        new Claim(
+                            "modules",
+                            string.Join(
+                                ",",
+                                allowedModules)));
+                }
+
+
+                // ==========================================
+                // 16D. ALLOWED PORTALS
+                // ==========================================
+                //
+                // Same claim multiple times.
+                // JWT decoder can show this as an array.
+                //
+
+                foreach (var portal in
+                         allowedPortals.Distinct(
+                             StringComparer.OrdinalIgnoreCase))
+                {
+                    claims.Add(
+                        new Claim(
+                            "allowed_portals",
+                            portal));
+                }
+
+
+                // ==========================================
+                // 16E. PORTAL ROLES
+                // ==========================================
+
+                if (portalRoles.Count > 0)
+                {
+                    claims.Add(
+                        new Claim(
+                            "portal_roles",
+                            JsonSerializer.Serialize(
+                                portalRoles)));
+                }
+
+
+                // ==========================================
+                // 16F. COMPANY
+                // ==========================================
+
+                if (!string.IsNullOrWhiteSpace(companyName))
+                {
+                    claims.Add(
+                        new Claim(
+                            "company",
+                            companyName));
+                }
+
+
+                // ==========================================
+                // 16G. FUTURE REPORTING MANAGER
+                // ==========================================
+                //
+                // Ippo reporting manager DB column illa.
+                //
+                // Future-la company_users-la add pannumbothu:
+                //
+                // claims.Add(new Claim(
+                //     "ReportingManagerId",
+                //     reportingManagerId.ToString()));
+                //
+                // etc.
+                //
+                // Ippo add panna vendam.
+                // ==========================================
+
+
+                // ==========================================
+                // 17. JWT CONFIG
+                // ==========================================
+
+                var jwtKey =
+                    _configuration["Jwt:Key"];
+
+                if (string.IsNullOrWhiteSpace(jwtKey))
+                {
+                    return StatusCode(500, new
+                    {
+                        success = false,
+                        message =
+                            "JWT Key is not configured."
+                    });
+                }
+
+
+                var key =
+                    new SymmetricSecurityKey(
+                        Encoding.UTF8.GetBytes(jwtKey));
+
+
+                var credentials =
+                    new SigningCredentials(
+                        key,
+                        SecurityAlgorithms.HmacSha256);
+
+
+                // ==========================================
+                // 18. CREATE TOKEN
+                // ==========================================
+
+                var token =
+                    new JwtSecurityToken(
+                        issuer:
+                            _configuration["Jwt:Issuer"],
+
+                        audience:
+                            _configuration["Jwt:Audience"],
+
+                        claims:
+                            claims,
+
+                        expires:
+                            DateTime.Now.AddDays(1),
+
+                        signingCredentials:
+                            credentials);
+
+
+                var jwtToken =
+                    new JwtSecurityTokenHandler()
+                        .WriteToken(token);
+
+
+                // ==========================================
+                // 19. FINAL RESPONSE
+                // ==========================================
 
                 return Ok(new
                 {
                     success = true,
 
-                    message = "Login successful",
+                    token = jwtToken,
 
-                    role = role,
+                    userId =
+                        userId,
 
-                    token = token,
+                    empId =
+                        empId,
 
-                    IsOrganizationSetupRequired = isOrganizationSetupRequired,
+                    empCode =
+                        empCode,
 
-                    IsProfileSetupRequired = isProfileSetupRequired,
+                    userName =
+                        finalUserName,
+
+                    email =
+                        email,
+
+                    role =
+                        role,
+
+                    companyName =
+                        companyName,
+
+                    orgId =
+                        organizationId,
+
+                    allowedModules =
+                        allowedModules,
+
+                    allowedPortals =
+                        allowedPortals,
+
+                    portalRoles =
+                        portalRoles,
+
+
+                    // --------------------------------------
+                    // Employee details
+                    // COMMON DB ONLY
+                    // --------------------------------------
 
                     employee = new
                     {
-                        employee.EmpId,
-                        employee.EmployeeCode,
-                        employee.FullName,
-                        employee.EmailId,
-                        employee.Phone,
-                        employee.DepartmentId,
-                        employee.DepartmentName,
-                        employee.DesignationId,
-                        employee.DesignationName,
-                        employee.ReportingManagerId,
-                        employee.ReportingManager_code,
-                        employee.ReportingManager_name,
-                        employee.DateOfJoining,
-                        employee.CategoryId,
-                        employee.ConfirmationDate,
-                        employee.GradeId,
-                        employee.Gender,
-                        employee.MaritalStatus,
-                        employee.OrganizationId
-                    }
+                        EmpId = empId,
+
+                        EmployeeCode = empCode,
+
+                        FullName = finalUserName,
+
+                        EmailId = email,
+
+                        ReportingManagerId =
+                            reportingManagerId,
+
+                        ReportingManager_code =
+                            reportingManagerCode,
+
+                        ReportingManager_name =
+                            reportingManagerName
+                    },
+
+                    message =
+                        "Login successful"
                 });
             }
             catch (Exception ex)
@@ -422,114 +774,1131 @@ namespace HRPortal.API.Controllers
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Error occurred",
-                    error = ex.Message
+
+                    message =
+                        "An error occurred during login.",
+
+                    error =
+                        ex.InnerException?.InnerException?.Message
+                        ?? ex.InnerException?.Message
+                        ?? ex.Message
                 });
             }
+        }
 
+        private async Task<IActionResult> CreateCommonLoginResponseAsync(
+    CompanyUser? companyUser,
+    UsersMaster? adminUser)
+        {
+            try
+            {
+                int userId;
+                int empId;
+                string empCode;
+                string userName;
+                string email;
+                int orgId;
+                string role;
+                string companyName;
+
+                List<string> allowedModules;
+                List<string> allowedPortals;
+
+                Dictionary<string, string> portalRoles;
+
+                // ==========================================
+                // COMPANY USER
+                // ==========================================
+
+                if (companyUser != null)
+                {
+                    userId = companyUser.EmpId;
+                    empId = companyUser.EmpId;
+
+                    empCode = companyUser.EmpCode ?? string.Empty;
+
+                    userName =
+                        companyUser.FullName ??
+                        companyUser.Email ??
+                        string.Empty;
+
+                    email = companyUser.Email ?? string.Empty;
+
+                    orgId = companyUser.OrgId ?? 0;
+
+                    companyName = string.Empty;
+
+                    // Dynamic portal roles
+                    portalRoles =
+                        ParsePortalRoles(companyUser.PortalRoles);
+
+                    // Dynamic portals
+                    allowedPortals =
+                        portalRoles.Keys
+                            .OrderBy(x => x)
+                            .ToList();
+
+                    // Dynamic modules
+                    allowedModules =
+                        ParseModuleList(
+                            companyUser.ErpCustomModules);
+
+                    // If no module list is available,
+                    // use portal names
+                    if (allowedModules.Count == 0)
+                    {
+                        allowedModules =
+                            allowedPortals.ToList();
+                    }
+
+                    // No hardcoded portal name
+                    role =
+                        portalRoles.Values.FirstOrDefault()
+                        ?? "Employee";
+                }
+                else
+                {
+                    // ==========================================
+                    // ADMIN USER
+                    // ==========================================
+
+                    userId = adminUser!.UserId;
+
+                    empId = 0;
+
+                    empCode = string.Empty;
+
+                    userName =
+                        adminUser.UserName ?? string.Empty;
+
+                    email =
+                        adminUser.EMail ?? string.Empty;
+
+                    orgId =
+                        adminUser.OrgId ?? 0;
+
+                    companyName =
+                        adminUser.CompName ?? string.Empty;
+
+                    role = "Admin";
+
+                    allowedModules =
+                        new List<string>();
+
+                    allowedPortals =
+                        new List<string>();
+
+                    portalRoles =
+                        new Dictionary<string, string>(
+                            StringComparer.OrdinalIgnoreCase);
+                }
+
+                // ==========================================
+                // ORGANIZATION CHECK
+                // ==========================================
+
+                if (orgId <= 0)
+                {
+                    return new UnauthorizedObjectResult(new
+                    {
+                        success = false,
+                        message =
+                            "Organization is not assigned to this user."
+                    });
+                }
+
+                // ==========================================
+                // JWT CLAIMS
+                // ==========================================
+
+                var claims = new List<Claim>
+        {
+            new Claim(
+                JwtRegisteredClaimNames.Sub,
+                email),
+
+            new Claim(
+                "userId",
+                userId.ToString()),
+
+            new Claim(
+                "orgId",
+                orgId.ToString()),
+
+            new Claim(
+                ClaimTypes.Email,
+                email),
+
+            new Claim(
+                ClaimTypes.Role,
+                role),
+
+            new Claim(
+                "role",
+                role)
+        };
+
+                if (empId > 0)
+                {
+                    claims.Add(
+                        new Claim(
+                            "EmpId",
+                            empId.ToString()));
+                }
+
+                if (!string.IsNullOrWhiteSpace(companyName))
+                {
+                    claims.Add(
+                        new Claim(
+                            "company",
+                            companyName));
+                }
+
+                // ==========================================
+                // JWT CONFIG
+                // ==========================================
+
+                var jwtKey =
+                    _configuration["Jwt:Key"];
+
+                if (string.IsNullOrWhiteSpace(jwtKey))
+                {
+                    return new ObjectResult(new
+                    {
+                        success = false,
+                        message = "JWT Key is not configured."
+                    })
+                    {
+                        StatusCode = 500
+                    };
+                }
+
+                var key =
+                    new SymmetricSecurityKey(
+                        Encoding.UTF8.GetBytes(jwtKey));
+
+                var credentials =
+                    new SigningCredentials(
+                        key,
+                        SecurityAlgorithms.HmacSha256);
+
+                // ==========================================
+                // CREATE TOKEN
+                // ==========================================
+
+                var token =
+                    new JwtSecurityToken(
+                        issuer:
+                            _configuration["Jwt:Issuer"],
+
+                        audience:
+                            _configuration["Jwt:Audience"],
+
+                        claims: claims,
+
+                        expires:
+                            DateTime.Now.AddDays(1),
+
+                        signingCredentials:
+                            credentials);
+
+                var jwtToken =
+                    new JwtSecurityTokenHandler()
+                        .WriteToken(token);
+
+                // ==========================================
+                // FINAL RESPONSE
+                // ==========================================
+
+                return new OkObjectResult(new
+                {
+                    success = true,
+
+                    token = jwtToken,
+
+                    userId = userId,
+
+                    empId = empId,
+
+                    empCode = empCode,
+
+                    userName = userName,
+
+                    email = email,
+
+                    role = role,
+
+                    companyName = companyName,
+
+                    orgId = orgId,
+
+                    allowedModules = allowedModules,
+
+                    allowedPortals = allowedPortals,
+
+                    portalRoles = portalRoles,
+
+                    message = "Login successful"
+                });
+            }
+            catch (Exception ex)
+            {
+                return new ObjectResult(new
+                {
+                    success = false,
+                    message =
+                        "Error while creating login response.",
+
+                    error =
+                        ex.InnerException?.InnerException?.Message
+                        ?? ex.InnerException?.Message
+                        ?? ex.Message
+                })
+                {
+                    StatusCode = 500
+                };
+            }
+        }
+
+        private Dictionary<string, string> ParsePortalRoles(
+    string? portalRoles)
+        {
+            try
+            {
+                var result =
+                    new Dictionary<string, string>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
+                if (string.IsNullOrWhiteSpace(portalRoles))
+                {
+                    return result;
+                }
+
+                using var document =
+                    JsonDocument.Parse(portalRoles);
+
+                if (document.RootElement.ValueKind !=
+                    JsonValueKind.Object)
+                {
+                    return result;
+                }
+
+                foreach (var property in
+                         document.RootElement.EnumerateObject())
+                {
+                    if (property.Value.ValueKind ==
+                        JsonValueKind.String)
+                    {
+                        var value =
+                            property.Value.GetString();
+
+                        if (!string.IsNullOrWhiteSpace(value))
+                        {
+                            result[property.Name] = value;
+                        }
+                    }
+                }
+
+                return result;
+            }
+            catch
+            {
+                return new Dictionary<string, string>(
+                    StringComparer.OrdinalIgnoreCase
+                );
+            }
+        }
+
+        private List<string> ParseModuleList(
+           string? modules)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(modules))
+                {
+                    return new List<string>();
+                }
+
+                // ==========================================
+                // JSON ARRAY
+                // ==========================================
+
+                if (modules.TrimStart().StartsWith("["))
+                {
+                    using var document =
+                        JsonDocument.Parse(modules);
+
+                    if (document.RootElement.ValueKind ==
+                        JsonValueKind.Array)
+                    {
+                        var result =
+                            new List<string>();
+
+                        foreach (var item in
+                                 document.RootElement
+                                     .EnumerateArray())
+                        {
+                            if (item.ValueKind ==
+                                JsonValueKind.String)
+                            {
+                                var value =
+                                    item.GetString();
+
+                                if (!string.IsNullOrWhiteSpace(value))
+                                {
+                                    result.Add(value);
+                                }
+                            }
+                        }
+
+                        return result
+                            .Distinct(
+                                StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                    }
+                }
+
+                // ==========================================
+                // COMMA SEPARATED
+                // ==========================================
+
+                return modules
+                    .Split(
+                        ',',
+                        StringSplitOptions
+                            .RemoveEmptyEntries
+                    )
+                    .Select(x => x.Trim())
+                    .Where(x =>
+                        !string.IsNullOrWhiteSpace(x))
+                    .Distinct(
+                        StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+            catch
+            {
+                return new List<string>();
+            }
+        }
+
+        private bool VerifyPasswordFlexible(
+     string enteredPassword,
+     string? storedPassword)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(storedPassword))
+                {
+                    return false;
+                }
+
+                // ==========================================
+                // BCrypt password
+                // ==========================================
+
+                if (storedPassword.StartsWith("$2a$") ||
+                    storedPassword.StartsWith("$2b$") ||
+                    storedPassword.StartsWith("$2y$"))
+                {
+                    return BCrypt.Net.BCrypt.Verify(
+                        enteredPassword,
+                        storedPassword);
+                }
+
+                // ==========================================
+                // Normal / plain password
+                // ==========================================
+
+                return storedPassword == enteredPassword;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
 
+        //[AllowAnonymous]
+        //[HttpPost("login")]
+        //public async Task<IActionResult> Login(
+        //    string userName,
+        //    string password,
+        //    int checkType)
+        //{
+        //    try
+        //    {
+        //        // ==========================================
+        //        // 1. LOGIN
+        //        // EXISTING DATABASE / EXISTING SP
+        //        // ==========================================
 
-        private string GenerateJwtToken(string email, string role, int? organizationId,int? EmpId)
+        //        var employees = await _context.LoginResponseDtos
+        //            .FromSqlRaw(
+        //                "EXEC dbo.sp_Login @UserName, @Password",
+        //                new SqlParameter("@UserName", userName),
+        //                new SqlParameter("@Password", password)
+        //            )
+        //            .ToListAsync();
+
+        //        var employee = employees.FirstOrDefault();
+
+        //        // ==========================================
+        //        // INVALID LOGIN
+        //        // ==========================================
+
+        //        if (employee == null || employee.IsSuccess == 0)
+        //        {
+        //            return Unauthorized(new
+        //            {
+        //                success = false,
+        //                message = "Invalid Username or Password"
+        //            });
+        //        }
+
+        //        // ==========================================
+        //        // 2. ROLE
+        //        // ==========================================
+
+        //        string role = employee.Role ?? "Employee";
+
+        //        // ==========================================
+        //        // 3. GET MODULES
+        //        // ORGANIZATION BASED ONLY
+        //        // ==========================================
+
+        //        var modules = new List<ModuleResponseDto>();
+
+        //        if (employee.orgId.HasValue &&
+        //            employee.orgId.Value > 0)
+        //        {
+        //            modules = await _context.OrganizationModules
+        //                .Where(x =>
+        //                    x.OrganizationId == employee.orgId.Value &&
+        //                    x.IsActive)
+        //                .Join(
+        //                    _context.ModuleMasters
+        //                        .Where(x => x.IsActive),
+        //                    om => om.ModuleId,
+        //                    mm => mm.ModuleId,
+        //                    (om, mm) => new ModuleResponseDto
+        //                    {
+        //                        ModuleId = mm.ModuleId,
+        //                        ModuleCode = mm.ModuleCode,
+        //                        ModuleName = mm.ModuleName
+        //                    })
+        //                .OrderBy(x => x.ModuleId)
+        //                .ToListAsync();
+        //        }
+
+        //        // ==========================================
+        //        // 4. JWT TOKEN
+        //        // ==========================================
+
+        //        var token = GenerateJwtToken(
+        //            employee.EmailId,
+        //            role,
+        //            employee.orgId,
+        //            employee.EmpId
+        //        );
+
+        //        // ==========================================
+        //        // 5. ORGANIZATION SETUP
+        //        // ==========================================
+
+        //        bool isOrganizationSetupRequired =
+        //            employee.orgId == null;
+
+        //        // ==========================================
+        //        // 6. PROFILE SETUP
+        //        // ==========================================
+
+        //        bool isProfileSetupRequired =
+        //            role != "Admin" &&
+        //            !role.Equals(
+        //                "SuperAdmin",
+        //                StringComparison.OrdinalIgnoreCase) &&
+        //            (
+        //                string.IsNullOrEmpty(employee.Phone) ||
+        //                employee.DepartmentId == null ||
+        //                employee.DesignationId == null ||
+        //                employee.DateOfJoining == null
+        //            );
+
+        //        // ==========================================
+        //        // 7. LOGIN RESPONSE
+        //        // ==========================================
+
+        //        return Ok(new
+        //        {
+        //            success = true,
+
+        //            message = "Login successful",
+
+        //            role = role,
+
+        //            token = token,
+
+        //            IsOrganizationSetupRequired =
+        //                isOrganizationSetupRequired,
+
+        //            IsProfileSetupRequired =
+        //                isProfileSetupRequired,
+
+        //            // Organization based modules
+        //            modules = modules,
+
+        //            employee = new
+        //            {
+        //                employee.UserId,
+        //                employee.UserName,
+
+        //                employee.EmpId,
+        //                employee.EmployeeCode,
+
+        //                employee.FullName,
+        //                employee.EmailId,
+        //                employee.Phone,
+
+        //                employee.RoleId,
+        //                employee.Role,
+
+        //                employee.DepartmentId,
+        //                employee.DepartmentName,
+
+        //                employee.DesignationId,
+        //                employee.DesignationName,
+
+        //                employee.ReportingManagerId,
+        //                employee.ReportingManager_code,
+        //                employee.ReportingManager_name,
+
+        //                employee.DateOfJoining,
+        //                employee.CategoryId,
+        //                employee.ConfirmationDate,
+        //                employee.GradeId,
+
+        //                employee.Gender,
+        //                employee.MaritalStatus,
+
+        //                employee.orgId
+        //            }
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            success = false,
+        //            message = "An error occurred during login.",
+        //            error = ex.InnerException?.Message ?? ex.Message
+        //        });
+        //    }
+        //}
+
+
+
+        private string GenerateJwtToken(
+        string email,
+        string role,
+        int? orgId,
+        int? EmpId)
         {
             var claimsList = new List<Claim>
     {
-          new Claim(ClaimTypes.Email, email),
-          new Claim(ClaimTypes.Role, role),
-          new Claim("EmpId", EmpId.ToString())
+        new Claim(ClaimTypes.Email, email),
+        new Claim(ClaimTypes.Role, role)
     };
 
-            if (organizationId.HasValue)
+            // EmpId இருந்தால் மட்டும் JWT-ல் add செய்யும்
+            if (EmpId.HasValue && EmpId.Value > 0)
             {
-                claimsList.Add(new Claim("OrganizationId", organizationId.Value.ToString()));
+                claimsList.Add(
+                    new Claim("EmpId", EmpId.Value.ToString())
+                );
+            }
+
+            // OrganizationId இருந்தால் JWT-ல் add செய்யும்
+            if (orgId.HasValue)
+            {
+                claimsList.Add(
+                    new Claim(
+                        "orgId",
+                        orgId.Value.ToString()
+                    )
+                );
             }
 
             var key = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(_configuration["Jwt:Key"]));
+                Encoding.UTF8.GetBytes(_configuration["Jwt:Key"])
+            );
 
-            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+            var creds = new SigningCredentials(
+                key,
+                SecurityAlgorithms.HmacSha256
+            );
 
             var token = new JwtSecurityToken(
                 issuer: _configuration["Jwt:Issuer"],
                 audience: _configuration["Jwt:Audience"],
                 claims: claimsList,
                 expires: DateTime.Now.AddHours(2),
-                signingCredentials: creds);
+                signingCredentials: creds
+            );
 
             return new JwtSecurityTokenHandler().WriteToken(token);
         }
+        private int GetOrganizationId()
+        {
+            var organizationIdClaim =
+                User.FindFirst("orgId");
 
+            if (organizationIdClaim == null)
+                throw new UnauthorizedAccessException(
+                    "OrganizationId not found in token.");
+
+            return int.Parse(organizationIdClaim.Value);
+        }
 
         //[Authorize]
-        [HttpPost("create-organization")]
-        public async Task<IActionResult> CreateOrganization([FromBody] OrganizationCreateDto request)
+        //[HttpPost("create-organization")]
+        //public async Task<IActionResult> CreateOrganization([FromBody] OrganizationCreateDto request)
+        //{
+        //    try
+        //    {
+        //        var email = User.FindFirst(ClaimTypes.Email)?.Value;
+
+        //        if (string.IsNullOrEmpty(email))
+        //        {
+        //            return Unauthorized(new
+        //            {
+        //                success = false,
+        //                message = "Invalid token"
+        //            });
+        //        }
+
+        //        var user = await _context.UsersMaster
+        //            .FirstOrDefaultAsync(x => x.Email == email);
+
+        //        if (user == null)
+        //        {
+        //            return NotFound(new
+        //            {
+        //                success = false,
+        //                message = "User not found"
+        //            });
+        //        }
+
+        //        if (user.org_id != null)
+        //        {
+        //            return BadRequest(new
+        //            {
+        //                success = false,
+        //                message = "Organization already assigned"
+        //            });
+        //        }
+
+        //        var organization = new OrganizationMaster
+        //        {
+        //            OrganizationName = request.OrganizationName,
+        //            OrganizationCode = request.OrganizationCode,
+        //            Email = request.Email,
+        //            Phone = request.Phone,
+        //            Address = request.Address,
+        //            IsActive = true,
+        //            CreatedDate = DateTime.Now
+        //        };
+
+        //        _context.OrganizationMasters.Add(organization);
+        //        await _context.SaveChangesAsync();
+
+        //        user.org_id = organization.OrganizationId;
+
+        //        var employee = await _context.EmployeeMasters
+        //            .FirstOrDefaultAsync(x => x.EmailId == user.Email);
+
+        //        if (employee != null)
+        //        {
+        //            employee.OrganizationId = organization.OrganizationId;
+        //        }
+
+        //        await _context.SaveChangesAsync();
+
+        //        return Ok(new
+        //        {
+        //            success = true,
+        //            message = "Organization created successfully",
+        //            organizationId = organization.OrganizationId
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            success = false,
+        //            message = ex.Message,
+        //            innerError = ex.InnerException?.Message
+        //        });
+        //    }
+        //}
+
+        //[HttpPost("create-organization")]
+        //public async Task<IActionResult> CreateOrganization(OrganizationCreateDto dto)
+        //{
+        //    try
+        //    {
+        //        var userIdClaim = User.FindFirst("userId")?.Value;
+        //        int userId = 0;
+        //        if (!string.IsNullOrEmpty(userIdClaim))
+        //        {
+        //            int.TryParse(userIdClaim, out userId);
+        //        }
+        //        else if (dto != null && !string.IsNullOrEmpty(dto.UserId))
+        //        {
+        //            int.TryParse(dto.UserId, out userId);
+        //        }
+
+        //        var connStr = _configuration.GetConnectionString("ElantrisConnection")
+        //            ?? _configuration.GetConnectionString("DefaultConnection")
+        //            ?? "Server=100.124.4.114,62534;Database=Elantris_Technologies;User Id=sa;Password=ET#2026;TrustServerCertificate=True;";
+
+        //        using var conn = new SqlConnection(connStr);
+        //        await conn.OpenAsync();
+
+        //        using var cmd = conn.CreateCommand();
+        //        cmd.CommandText = @"EXEC dbo.sp_CreateOrganization 
+        //     @OrgName, @AddressStreet1, @AddressStreet2, @City, @PostalCode,
+        //     @StateId, @CountryId, @IndustryId, @UserId, @GSTNo,
+        //     @TimezoneId, @CurrencyId, @DBName, @StateCode";
+
+        //        cmd.Parameters.Add(new SqlParameter("@OrgName", (object?)dto?.OrgName ?? DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@AddressStreet1", (object?)dto?.AddressStreet1 ?? DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@AddressStreet2", (object?)dto?.AddressStreet2 ?? DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@City", (object?)dto?.City ?? DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@PostalCode", (object?)dto?.PostalCode ?? DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@StateId", !string.IsNullOrEmpty(dto?.StateId) ? Convert.ToInt32(dto.StateId) : DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@CountryId", !string.IsNullOrEmpty(dto?.CountryId) ? Convert.ToInt32(dto.CountryId) : DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@IndustryId", !string.IsNullOrEmpty(dto?.IndustryId) ? Convert.ToInt32(dto.IndustryId) : DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@UserId", userId > 0 ? (object)userId : DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@GSTNo", (object?)dto?.GSTNo ?? DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@TimezoneId", !string.IsNullOrEmpty(dto?.TimezoneId) ? Convert.ToInt32(dto.TimezoneId) : DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@CurrencyId", !string.IsNullOrEmpty(dto?.CurrencyId) ? Convert.ToInt32(dto.CurrencyId) : DBNull.Value));
+        //        cmd.Parameters.Add(new SqlParameter("@DBName", string.IsNullOrWhiteSpace(dto?.DBName) || dto?.DBName == "ERP" ? "Elantris_Technologies" : dto.DBName));
+        //        cmd.Parameters.Add(new SqlParameter("@StateCode", DBNull.Value));
+
+        //        var sb = new StringBuilder();
+        //        using var reader = await cmd.ExecuteReaderAsync();
+        //        while (await reader.ReadAsync())
+        //        {
+        //            if (!reader.IsDBNull(0))
+        //            {
+        //                sb.Append(reader.GetString(0));
+        //            }
+        //        }
+
+        //        string jsonResult = sb.ToString();
+        //        if (string.IsNullOrWhiteSpace(jsonResult))
+        //        {
+        //            return BadRequest(new { status = false, message = "Failed to create organization." });
+        //        }
+
+        //        // Ensure selected_modules is saved as 'erp' (or requested modules) in Organization table
+        //        try
+        //        {
+        //            string modulesToSave = !string.IsNullOrWhiteSpace(dto?.SelectedModules)
+        //                ? dto.SelectedModules
+        //                : (!string.IsNullOrWhiteSpace(dto?.RequestedModules) ? dto.RequestedModules : "erp");
+
+        //            using var updateCmd = conn.CreateCommand();
+        //            updateCmd.CommandText = @"UPDATE dbo.Organization 
+        //         SET selected_modules = @SelectedModules 
+        //         WHERE (user_id = CAST(@UserId AS VARCHAR(100)) AND @UserId > 0)
+        //            OR (org_name = @OrgName AND (selected_modules IS NULL OR selected_modules = ''));";
+        //            updateCmd.Parameters.Add(new SqlParameter("@SelectedModules", modulesToSave));
+        //            updateCmd.Parameters.Add(new SqlParameter("@UserId", userId));
+        //            updateCmd.Parameters.Add(new SqlParameter("@OrgName", (object?)dto?.OrgName ?? DBNull.Value));
+        //            await updateCmd.ExecuteNonQueryAsync();
+        //        }
+        //        catch { }
+
+        //        return Content(jsonResult, "application/json");
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return BadRequest(new { message = ex.InnerException?.Message ?? ex.Message });
+        //    }
+        //}
+
+        //// GET ALL ORGANIZATIONS (via Stored Procedure sp_GetAllOrganizations)
+        ///
+
+
+        [HttpGet("get-all-organization")]
+        public async Task<IActionResult> GetAllOrganization()
         {
             try
             {
-                var email = User.FindFirst(ClaimTypes.Email)?.Value;
+                // ==========================================
+                // COMMON DB CONNECTION
+                // ==========================================
 
-                if (string.IsNullOrEmpty(email))
+                var connStr = _configuration.GetConnectionString("CommonDb");
+
+                if (string.IsNullOrWhiteSpace(connStr))
+                {
+                    return StatusCode(500, new
+                    {
+                        success = false,
+                        message = "CommonDb connection string not configured."
+                    });
+                }
+
+                // ==========================================
+                // OPEN DATABASE CONNECTION
+                // ==========================================
+
+                await using var conn = new SqlConnection(connStr);
+
+                await conn.OpenAsync();
+
+                // ==========================================
+                // STORED PROCEDURE
+                // ==========================================
+
+                await using var cmd = conn.CreateCommand();
+
+                cmd.CommandText = "dbo.sp_GetAllOrganizations";
+                cmd.CommandType = CommandType.StoredProcedure;
+
+                // ==========================================
+                // EXECUTE STORED PROCEDURE
+                // ==========================================
+
+                var sb = new StringBuilder();
+
+                await using var reader = await cmd.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    if (!reader.IsDBNull(0))
+                    {
+                        sb.Append(reader.GetString(0));
+                    }
+                }
+
+                // ==========================================
+                // GET JSON RESULT
+                // ==========================================
+
+                var jsonResult = sb.ToString();
+
+                if (string.IsNullOrWhiteSpace(jsonResult))
+                {
+                    return Content("[]", "application/json");
+                }
+
+                // ==========================================
+                // RETURN JSON DIRECTLY
+                // ==========================================
+
+                return Content(
+                    jsonResult,
+                    "application/json"
+                );
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error fetching organizations.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        // GET SINGLE ORGANIZATION (via Stored Procedure sp_GetOrganizationDetails)
+        [Authorize]
+        [HttpGet("get-organization")]
+        public async Task<IActionResult> GetOrganization()
+        {
+            try
+            {
+                // ==========================================
+                // 1. GET ORGANIZATION ID FROM JWT
+                // ==========================================
+
+                var orgIdClaim = User.FindFirst("orgId")?.Value;
+
+                if (string.IsNullOrWhiteSpace(orgIdClaim) ||
+                    !int.TryParse(orgIdClaim, out int organizationId) ||
+                    organizationId <= 0)
                 {
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "Invalid token"
+                        message = "OrganizationId not found in token."
                     });
                 }
 
-                var user = await _context.UsersMaster
-                    .FirstOrDefaultAsync(x => x.Email == email);
+                // ==========================================
+                // 2. GET USER ID FROM JWT
+                // ==========================================
 
-                if (user == null)
+                var userIdClaim = User.FindFirst("userId")?.Value;
+
+                int? userId = null;
+
+                if (!string.IsNullOrWhiteSpace(userIdClaim) &&
+                    int.TryParse(userIdClaim, out int parsedUserId) &&
+                    parsedUserId > 0)
+                {
+                    userId = parsedUserId;
+                }
+
+                // ==========================================
+                // 3. USE COMMON DB CONNECTION
+                // NO HARDCODED CONNECTION STRING
+                // ==========================================
+
+                var conn = _commonContext.Database.GetDbConnection();
+
+                if (conn.State != ConnectionState.Open)
+                {
+                    await conn.OpenAsync();
+                }
+
+                // ==========================================
+                // 4. CALL COMMON DB SP
+                // ==========================================
+
+                using var cmd = conn.CreateCommand();
+
+                cmd.CommandText = "dbo.sp_GetOrganizationDetails";
+                cmd.CommandType = CommandType.StoredProcedure;
+
+                var orgParameter = cmd.CreateParameter();
+                orgParameter.ParameterName = "@OrgId";
+                orgParameter.Value = organizationId;
+                cmd.Parameters.Add(orgParameter);
+
+                var userParameter = cmd.CreateParameter();
+                userParameter.ParameterName = "@UserId";
+                userParameter.Value =
+                    userId.HasValue
+                        ? userId.Value
+                        : DBNull.Value;
+
+                cmd.Parameters.Add(userParameter);
+
+                // ==========================================
+                // 5. READ JSON RESPONSE
+                // ==========================================
+
+                var sb = new StringBuilder();
+
+                using var reader =
+                    await cmd.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    if (!reader.IsDBNull(0))
+                    {
+                        sb.Append(reader.GetString(0));
+                    }
+                }
+
+                var jsonResult = sb.ToString();
+
+                // ==========================================
+                // 6. NOT FOUND
+                // ==========================================
+
+                if (string.IsNullOrWhiteSpace(jsonResult))
                 {
                     return NotFound(new
                     {
                         success = false,
-                        message = "User not found"
+                        message = "Organization not found."
                     });
                 }
 
-                if (user.OrganizationId != null)
+                // ==========================================
+                // 7. RETURN JSON
+                // ==========================================
+
+                return Content(
+                    jsonResult,
+                    "application/json");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
                 {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = "Organization already assigned"
-                    });
-                }
+                    success = false,
+                    message = "Error fetching organization.",
+                    error =
+                        ex.InnerException?.InnerException?.Message
+                        ?? ex.InnerException?.Message
+                        ?? ex.Message
+                });
+            }
+        }
 
-                var organization = new OrganizationMaster
-                {
-                    OrganizationName = request.OrganizationName,
-                    OrganizationCode = request.OrganizationCode,
-                    Email = request.Email,
-                    Phone = request.Phone,
-                    Address = request.Address,
-                    IsActive = true,
-                    CreatedDate = DateTime.Now
-                };
+        [Authorize]
+        [HttpGet("modules")]
+        public async Task<IActionResult> GetOrganizationModules()
+        {
+            try
+            {
+                // ==========================================
+                // GET ORGANIZATION ID FROM JWT
+                // ==========================================
 
-                _context.OrganizationMasters.Add(organization);
-                await _context.SaveChangesAsync();
+                var organizationId = GetOrganizationId();
 
-                user.OrganizationId = organization.OrganizationId;
+                // ==========================================
+                // GET MODULES
+                // Organization_Module + Module_Master
+                // ==========================================
 
-                var employee = await _context.EmployeeMasters
-                    .FirstOrDefaultAsync(x => x.EmailId == user.Email);
+                var modules = await _context.OrganizationModules
+                    .Where(x =>
+                        x.OrgId == organizationId &&
+                        x.IsActive)
+                    .Join(
+                        _context.ModuleMasters,
+                        om => om.Id,
+                        mm => mm.ModuleId,
+                        (om, mm) => new
+                        {
+                            moduleId = mm.ModuleId,
+                            moduleCode = mm.ModuleCode,
+                            moduleName = mm.ModuleName,
+                            isActive = om.IsActive,
+                            createdDate = om.AssignedDate
+                        })
+                    .Where(x => x.isActive)
+                    .OrderBy(x => x.moduleId)
+                    .ToListAsync();
 
-                if (employee != null)
-                {
-                    employee.OrganizationId = organization.OrganizationId;
-                }
-
-                await _context.SaveChangesAsync();
+                // ==========================================
+                // RESPONSE
+                // ==========================================
 
                 return Ok(new
                 {
                     success = true,
-                    message = "Organization created successfully",
-                    organizationId = organization.OrganizationId
+                    organizationId = organizationId,
+                    modules = modules
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = ex.Message
                 });
             }
             catch (Exception ex)
@@ -537,39 +1906,8 @@ namespace HRPortal.API.Controllers
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = ex.Message,
-                    innerError = ex.InnerException?.Message
-                });
-            }
-        }
-
-
-        //[Authorize]
-        [HttpGet("employee/access-control")]
-        public async Task<IActionResult> GetAccessControl(int designationId, int Employeeid)
-        {
-            try
-            {
-                var result = await _context.Set<EmployeeAccessResultsdto>()
-                    .FromSqlRaw("EXEC GetEmployeeAccessAndAmount @desig, @empid",
-                        new SqlParameter("@desig", designationId),
-                        new SqlParameter("@empid", Employeeid))
-                    .ToListAsync();
-
-                var data = result.FirstOrDefault();
-
-                return Ok(new
-                {
-                    status = data?.status ?? "no_access",
-                    totalAmount = data?.TotalAmount ?? 0
-                });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    message = "Error occurred",
-                    error = ex.Message
+                    message = "An error occurred while fetching organization modules.",
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
@@ -660,58 +1998,220 @@ namespace HRPortal.API.Controllers
         //    }
         //}
 
-        [HttpGet]
-        public async Task<IActionResult> GetEmployees() //Dhanush
+        //[HttpGet]
+        //public async Task<IActionResult> GetEmployees() //Dhanush
+        //{
+        //    try
+        //    {
+        //        var employees = await (
+        //    from e in _context.EmployeeMasters
+
+        //    join d in _context.Designations
+        //        on e.DesignationId equals d.Id into desigJoin
+        //    from d in desigJoin.DefaultIfEmpty()
+
+        //    join dept in _context.Department_Master
+        //        on e.DepartmentId equals dept.DepartmentId into deptJoin
+        //    from dept in deptJoin.DefaultIfEmpty()
+
+        //    select new
+        //    {
+        //        empId = e.EmpId,
+        //        employeeCode = e.EmployeeCode,
+        //        fullName = e.FullName,
+        //        emailId = e.EmailId,
+
+        //        departmentId = e.DepartmentId,
+
+        //        department = dept != null ? dept.DepartmentName : null,   // ✅ department name
+
+        //        designationId = e.DesignationId,
+        //        designation = d != null ? d.Name : null,        // ✅ designation name
+
+        //        dateOfJoining = e.DateOfJoining
+        //    }
+        //).ToListAsync();
+
+        //        return Ok(employees);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            message = "An error occurred while fetching employees",
+        //            error = ex.Message
+        //        });
+        //    }
+        //}
+
+        //[Authorize]
+        //[HttpGet("employees")]
+        //public async Task<IActionResult> GetEmployees()
+        //{
+        //    try
+        //    {
+        //        var orgIdClaim = User.FindFirst("orgId")?.Value;
+
+        //        if (string.IsNullOrEmpty(orgIdClaim))
+        //        {
+        //            return Unauthorized(new
+        //            {
+        //                success = false,
+        //                message = "orgId not found in token."
+        //            });
+        //        }
+
+        //        int organizationId = int.Parse(orgIdClaim);
+
+        //        var employees = await _coo.EmployeeMasters
+        //            .Where(x =>
+        //                x.OrganizationId == organizationId &&
+        //                x.IsActive)
+        //            .Select(x => new
+        //            {
+        //                empId = x.EmpId,
+        //                employeeCode = x.EmployeeCode,
+        //                fullName = x.FullName,
+        //                emailId = x.EmailId,
+        //                phone = x.Phone,
+        //                departmentId = x.DepartmentId,
+        //                designationId = x.DesignationId,
+        //                roleId = x.RoleId,
+        //                reportingManagerId = x.ReportingManagerId,
+        //                dateOfJoining = x.DateOfJoining,
+        //                isActive = x.IsActive
+        //            })
+        //            .OrderBy(x => x.fullName)
+        //            .ToListAsync();
+
+        //        return Ok(new
+        //        {
+        //            success = true,
+        //            data = employees
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            success = false,
+        //            message = "Error while fetching employees.",
+        //            error = ex.Message
+        //        });
+        //    }
+        //}
+
+
+        [Authorize]
+        [HttpGet("employees")]
+        public async Task<IActionResult> GetEmployees()
         {
             try
             {
-                var employees = await (
-            from e in _context.EmployeeMasters
+                // ==========================================
+                // 1. GET ORGANIZATION ID FROM JWT
+                // ==========================================
 
-            join d in _context.Designations
-                on e.DesignationId equals d.Id into desigJoin
-            from d in desigJoin.DefaultIfEmpty()
+                var orgIdClaim = User.FindFirst("orgId")?.Value;
 
-            join dept in _context.Department_Master
-                on e.DepartmentId equals dept.DepartmentId into deptJoin
-            from dept in deptJoin.DefaultIfEmpty()
+                if (string.IsNullOrWhiteSpace(orgIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "orgId not found in token."
+                    });
+                }
 
-            select new
-            {
-                empId = e.EmpId,
-                employeeCode = e.EmployeeCode,
-                fullName = e.FullName,
-                emailId = e.EmailId,
+                if (!int.TryParse(orgIdClaim, out int organizationId) ||
+                    organizationId <= 0)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid orgId in token."
+                    });
+                }
 
-                departmentId = e.DepartmentId,
+                // ==========================================
+                // 2. GET EMPLOYEES FROM COMMON DB
+                // company_users
+                // ==========================================
 
-                department = dept != null ? dept.DepartmentName : null,   // ✅ department name
+                var employees =
+                    await _commonContext.CompanyUsers
+                        .Where(x =>
+                            x.OrgId == organizationId &&
+                            (
+                                string.IsNullOrWhiteSpace(x.Status) ||
+                                x.Status == "Active"
+                            )
+                        )
+                        .Select(x => new
+                        {
+                            empId = x.EmpId,
 
-                designationId = e.DesignationId,
-                designation = d != null ? d.Name : null,        // ✅ designation name
+                            employeeCode = x.EmpCode,
 
-                dateOfJoining = e.DateOfJoining
-            }
-        ).ToListAsync();
+                            fullName = x.FullName,
 
-                return Ok(employees);
+                            emailId = x.Email,
+
+                            phone = x.MobileNumber,
+
+                            department = x.Department,
+
+                            designation = x.PrimaryTitle,
+
+                            status = x.Status,
+
+                            organizationId = x.OrgId,
+
+                            isActive =
+                                string.IsNullOrWhiteSpace(x.Status) ||
+                                x.Status == "Active"
+                        })
+                        .OrderBy(x => x.fullName)
+                        .ToListAsync();
+
+                // ==========================================
+                // 3. RESPONSE
+                // ==========================================
+
+                return Ok(new
+                {
+                    success = true,
+
+                    organizationId = organizationId,
+
+                    data = employees
+                });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
-                    message = "An error occurred while fetching employees",
-                    error = ex.Message
+                    success = false,
+                    message = "Error while fetching employees.",
+                    error =
+                        ex.InnerException?.InnerException?.Message
+                        ?? ex.InnerException?.Message
+                        ?? ex.Message
                 });
             }
         }
-
+        [Authorize]
         [HttpGet("designation")]
         public async Task<IActionResult> GetDesignation()
         {
             try
             {
+                var organizationId = GetOrganizationId();
+
                 var data = await _context.Designation
+                    .Where(x =>
+                        x.OrganizationId == organizationId &&
+                        x.IsActive)
                     .Select(x => new
                     {
                         id = x.Id,
@@ -734,7 +2234,8 @@ namespace HRPortal.API.Controllers
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = ex.Message
+                    message = "Error while fetching designations.",
+                    error = ex.Message
                 });
             }
         }
@@ -814,7 +2315,7 @@ namespace HRPortal.API.Controllers
         {
             try
             {
-                var orgIdClaim = User.FindFirst("OrganizationId")?.Value;
+                var orgIdClaim = User.FindFirst("orgId")?.Value;
 
                 if (string.IsNullOrEmpty(orgIdClaim))
                 {
@@ -865,107 +2366,66 @@ namespace HRPortal.API.Controllers
         //[Authorize]
         [Authorize]
         [HttpPost("register")]
-        public async Task<IActionResult> CreateEmployee([FromBody] EmployeeCreateDto dto)
+        public async Task<IActionResult> RegisterEmployee(
+     [FromBody] EmployeeCreateDto model)
         {
             try
             {
-                // Get OrganizationId from JWT
-                var orgIdClaim = User.FindFirst("OrganizationId")?.Value;
+                var orgIdClaim = User.FindFirst("orgId")?.Value;
 
                 if (string.IsNullOrEmpty(orgIdClaim))
                 {
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "OrganizationId not found in token"
+                        message = "orgId not found in token."
                     });
                 }
 
                 int organizationId = int.Parse(orgIdClaim);
 
-                // Email exists check in Employee_Master
-                var emailExists = await _context.EmployeeMasters
-                    .AnyAsync(e => e.EmailId == dto.EmailId);
+                var exists = await _context.EmployeeMasters
+                    .AnyAsync(x =>
+                        x.OrganizationId == organizationId &&
+                        x.EmailId == model.EmailId);
 
-                if (emailExists)
+                if (exists)
                 {
                     return BadRequest(new
                     {
                         success = false,
-                        message = "Email already exists"
+                        message = "Employee already exists."
                     });
                 }
 
-                // Employee code exists check
-                var codeExists = await _context.EmployeeMasters
-                    .AnyAsync(e => e.EmployeeCode == dto.EmployeeCode);
-
-                if (codeExists)
-                {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = "Employee Code already exists"
-                    });
-                }
-
-                // Users_Master email check
-                var userExists = await _context.UsersMaster
-                    .AnyAsync(x => x.Email == dto.EmailId);
-
-                if (userExists)
-                {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = "User already exists"
-                    });
-                }
-
-                // Employee_Master Insert
                 var employee = new EmployeeMaster
                 {
-                    EmployeeCode = dto.EmployeeCode,
-                    FullName = dto.FullName,
-                    EmailId = dto.EmailId,
-                    Phone = dto.Phone,
-                    EmergencyContact = dto.EmergencyContact,
-                    DepartmentId = dto.DepartmentID,
-                    DesignationId = dto.DesignationID,
-                    DateOfJoining = dto.DateOfJoining,
-                    CategoryId = dto.CategoryId,
-                    Password = dto.password,   // ✔ check here
-                    ReportingManagerId = dto.ReportingManagerId, // ✔ check here
+                    EmployeeCode = model.EmployeeCode,
+                    FullName = model.FullName,
+                    EmailId = model.EmailId,
+                    Phone = model.Phone,
+                    DepartmentId = model.DepartmentID,
+                    DesignationId = model.DesignationID,
+                    RoleId = model.RoleId,
+                    ReportingManagerId = model.ReportingManagerId,
+                    DateOfJoining = model.DateOfJoining,
+
+                    // JWT-la irundhu
                     OrganizationId = organizationId,
 
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
+                    // New employee active
+                    IsActive = true
                 };
 
                 _context.EmployeeMasters.Add(employee);
-
-                // Users_Master Insert
-                var user = new UsersMaster
-                {
-                    Name = dto.FullName,
-                    Email = dto.EmailId,
-                    PasswordHash = dto.password, // later hash pannalaam
-                    Role = "Employee",
-                    OrganizationId = organizationId,
-                    IsActive = true,
-                    CreatedAt = DateTime.Now
-                };
-
-                _context.UsersMaster.Add(user);
 
                 await _context.SaveChangesAsync();
 
                 return Ok(new
                 {
                     success = true,
-                    message = "Employee created successfully",
-                    employeeId = employee.EmpId,
-                    organizationId = organizationId
+                    message = "Employee registered successfully.",
+                    empId = employee.EmpId
                 });
             }
             catch (Exception ex)
@@ -973,11 +2433,412 @@ namespace HRPortal.API.Controllers
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = ex.Message,
-                    innerError = ex.InnerException?.Message
+                    message = "Error while registering employee.",
+                    error = ex.InnerException?.InnerException?.Message
+                             ?? ex.InnerException?.Message
+                             ?? ex.Message
                 });
             }
         }
+
+
+        [Authorize]
+        [HttpPut("employee/{id}")]
+        public async Task<IActionResult> UpdateEmployee(
+       int id,
+       [FromBody] EmployeeCreateDto model)
+        {
+            try
+            {
+                // Get OrganizationId from JWT
+                var orgIdClaim = User.FindFirst("orgId")?.Value;
+
+                if (string.IsNullOrEmpty(orgIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "orgId not found in token."
+                    });
+                }
+
+                int organizationId = int.Parse(orgIdClaim);
+
+                // Find employee only inside current organization
+                var employee = await _context.EmployeeMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.EmpId == id &&
+                        x.OrganizationId == organizationId &&
+                        x.IsActive);
+
+                if (employee == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Employee not found."
+                    });
+                }
+
+                // Update employee details
+                employee.EmployeeCode = model.EmployeeCode;
+                employee.FullName = model.FullName;
+                employee.EmailId = model.EmailId;
+                employee.Phone = model.Phone;
+
+                employee.RoleId = model.RoleId;
+                employee.ReportingManagerId = model.ReportingManagerId;
+                employee.DateOfJoining = model.DateOfJoining;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Employee updated successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while updating employee.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        [Authorize]
+        [HttpDelete("employee/{id}")]
+        public async Task<IActionResult> DeleteEmployee(int id)
+        {
+            try
+            {
+                var orgIdClaim = User.FindFirst("orgId")?.Value;
+
+                if (string.IsNullOrEmpty(orgIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "orgId not found in token."
+                    });
+                }
+
+                int organizationId = int.Parse(orgIdClaim);
+
+                var employee = await _context.EmployeeMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.EmpId == id &&
+                        x.OrganizationId == organizationId &&
+                        x.IsActive);
+
+                if (employee == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Employee not found."
+                    });
+                }
+
+                employee.IsActive = false;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Employee deactivated successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while deactivating employee.",
+                    error = ex.Message
+                });
+            }
+        }
+        [HttpGet("roles")]
+        public async Task<IActionResult> GetRoles()
+        {
+            try
+            {
+                var orgIdClaim = User.FindFirst("orgId")?.Value;
+
+                if (string.IsNullOrEmpty(orgIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "orgId not found in token."
+                    });
+                }
+
+                int organizationId = int.Parse(orgIdClaim);
+
+                var roles = await _context.RoleMasters
+                    .Where(x =>
+                        x.OrganizationId == organizationId &&
+                        x.IsActive)
+                    .OrderBy(x => x.RoleName)
+                    .Select(x => new
+                    {
+                        roleId = x.RoleId,
+                        roleName = x.RoleName
+                    })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    data = roles
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while fetching roles.",
+                    error = ex.Message
+                });
+            }
+        }
+
+
+        // =====================================================
+        // POST - ADD ROLE
+        // =====================================================
+
+        [HttpPost("roles")]
+        public async Task<IActionResult> CreateRole(
+            [FromBody] CreateRoleDto model)
+        {
+            try
+            {
+                if (model == null ||
+                    string.IsNullOrWhiteSpace(model.RoleName))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "RoleName is required."
+                    });
+                }
+
+
+                // Get OrganizationId from JWT
+                var orgIdClaim = User.FindFirst("orgId")?.Value;
+
+                if (string.IsNullOrEmpty(orgIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Org_Id not found in token."
+                    });
+                }
+
+                int organizationId = int.Parse(orgIdClaim);
+
+
+                // Check duplicate role
+                var exists = await _context.RoleMasters
+                    .AnyAsync(x =>
+                        x.OrganizationId == organizationId &&
+                        x.RoleName == model.RoleName.Trim() &&
+                        x.IsActive);
+
+                if (exists)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Role already exists."
+                    });
+                }
+
+
+                // Create role
+                var role = new RoleMaster
+                {
+                    RoleName = model.RoleName.Trim(),
+                    OrganizationId = organizationId,
+                    IsActive = true,
+                    CreatedDate = DateTime.Now
+                };
+
+                _context.RoleMasters.Add(role);
+
+                await _context.SaveChangesAsync();
+
+                var access = new CompanyexpenseAccesses
+                {
+                    OrganizationId = organizationId,
+                    RoleId = role.RoleId,
+                    Action = true,       // 1 = Limited Access
+                    IsActive = true,
+                    CreatedDate = DateTime.Now
+                };
+
+                _context.CompanyexpenseAccesses.Add(access);
+
+                await _context.SaveChangesAsync();
+
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Role created successfully.",
+                    data = new
+                    {
+                        roleId = role.RoleId,
+                        roleName = role.RoleName
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while creating role.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        [HttpPut("roles/{id}")]
+        public async Task<IActionResult> UpdateRole(
+    int id,
+    [FromBody] CreateRoleDto model)
+        {
+            try
+            {
+                var orgIdClaim = User.FindFirst("orgId")?.Value;
+
+                if (string.IsNullOrEmpty(orgIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Org_Id not found in token."
+                    });
+                }
+
+                int organizationId = int.Parse(orgIdClaim);
+
+                var role = await _context.RoleMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.RoleId == id &&
+                        x.OrganizationId == organizationId &&
+                        x.IsActive);
+
+                if (role == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Role not found."
+                    });
+                }
+
+                var exists = await _context.RoleMasters
+                    .AnyAsync(x =>
+                        x.RoleId != id &&
+                        x.OrganizationId == organizationId &&
+                        x.RoleName == model.RoleName.Trim() &&
+                        x.IsActive);
+
+                if (exists)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Role already exists."
+                    });
+                }
+
+                role.RoleName = model.RoleName.Trim();
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Role updated successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while updating role.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        [HttpDelete("roles/{id}")]
+        public async Task<IActionResult> DeleteRole(int id)
+        {
+            try
+            {
+                var orgIdClaim = User.FindFirst("orgId")?.Value;
+
+                if (string.IsNullOrEmpty(orgIdClaim))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "orgId not found in token."
+                    });
+                }
+
+                int organizationId = int.Parse(orgIdClaim);
+
+                var role = await _context.RoleMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.RoleId == id &&
+                        x.OrganizationId == organizationId &&
+                        x.IsActive);
+
+                if (role == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Role not found."
+                    });
+                }
+
+                role.IsActive = false;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Role deactivated successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while deleting role.",
+                    error = ex.Message
+                });
+            }
+        }
+
         [Authorize]
         [HttpPost("{id}/employment-information")]
         public async Task<IActionResult> SaveEmploymentInformation(

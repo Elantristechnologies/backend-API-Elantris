@@ -161,5 +161,9 @@ namespace HRPortal.API.Models
         public int? OrganizationId { get; set; }
 
 
+        public int? RoleId { get; set; }
+
+        public bool IsActive { get; set; }
+
     }
 }

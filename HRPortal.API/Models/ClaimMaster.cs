@@ -16,7 +16,7 @@ namespace HRPortal.API.Models
         [Column("claim_month")]
         public DateTime ClaimMonth { get; set; } //1234
 
-
+        public int? OrganizationId { get; set; }   // ✅ ADD
 
         [Column("created_at")]
         public DateTime CreatedAt { get; set; } = DateTime.Now;
