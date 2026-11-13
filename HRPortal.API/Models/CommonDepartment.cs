@@ -17,6 +17,10 @@ namespace HRPortal.API.Models
         [Column("org_id")]
         public int OrgId { get; set; }
 
+        [Column("branch_id")]
+        public int? BranchId { get; set; }
+
+
         [Column("created_at")]
         public DateTime? CreatedAt { get; set; }
     }

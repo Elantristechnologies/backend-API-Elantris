@@ -51,6 +51,8 @@ namespace HRPortal.API.Models
         [Column("current_approval_level")]
         public int? CurrentApprovalLevel { get; set; }
 
-        
+        public int? DepartmentId { get; set; }
+
+
     }
 }

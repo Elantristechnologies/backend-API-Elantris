@@ -24,24 +24,7 @@ builder.Services.AddControllers();
 var jwtSettings = builder.Configuration.GetSection("Jwt");
 var key = Encoding.UTF8.GetBytes(jwtSettings["Key"]!);
 
-//builder.Services.AddAuthentication(options =>
-//{
-//    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-//    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-//})
-//.AddJwtBearer(options =>
-//{
-//    options.TokenValidationParameters = new TokenValidationParameters
-//    {
-//        ValidateIssuer = true,
-//        ValidateAudience = true,
-//        ValidateLifetime = true,
-//        ValidateIssuerSigningKey = true,
-//        ValidIssuer = jwtSettings["Issuer"],
-//        ValidAudience = jwtSettings["Audience"],
-//        IssuerSigningKey = new SymmetricSecurityKey(key)
-//    };
-//});
+
 
 // Program.cs அல்லது Startup.cs
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -95,6 +78,10 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 builder.Services.AddDbContext<CommonDbContext>(options =>
     options.UseSqlServer(
         builder.Configuration.GetConnectionString("CommonDb")));
+
+// Task_Manager Database
+builder.Services.AddDbContext<TaskManagerDbContext>(options =>
+options.UseSqlServer(builder.Configuration.GetConnectionString("TaskManagerConnection")));
 
 //----------Email setUp----//
 

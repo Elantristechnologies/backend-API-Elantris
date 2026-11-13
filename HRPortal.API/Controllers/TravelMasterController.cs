@@ -1,5 +1,9 @@
 ﻿using ClosedXML.Excel;
+using DocumentFormat.OpenXml;
+using DocumentFormat.OpenXml.Bibliography;
 using DocumentFormat.OpenXml.InkML;
+using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Spreadsheet;
 using HRPortal.API.Data;
 using HRPortal.API.DTOs;
 using HRPortal.API.Models;
@@ -16,12 +20,14 @@ using MimeKit;
 using System.Collections;
 using System.Data;
 using System.Data.Common;
+using System.IO;
 using System.Net;
 using System.Net.Http.Headers;
+
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json;
+
 using static System.Runtime.InteropServices.JavaScript.JSType;
 
 
@@ -40,10 +46,13 @@ namespace HRPortal.API.Controllers
         private readonly HttpClient _httpClient;
         private readonly EmailService _emailService;
         private readonly CommonDbContext _commonContext;
+        private readonly TaskManagerDbContext _taskManagerDbContext;
 
 
 
-        public TravelMasterController(ApplicationDbContext context, IWebHostEnvironment environment, IConfiguration configuration, HttpClient httpClient, EmailService emailService, CommonDbContext commonContext)
+
+
+        public TravelMasterController(ApplicationDbContext context, IWebHostEnvironment environment, IConfiguration configuration, HttpClient httpClient, EmailService emailService, CommonDbContext commonContext, TaskManagerDbContext taskManagerDbContext)
         {
             _context = context;
             _environment = environment;
@@ -51,6 +60,7 @@ namespace HRPortal.API.Controllers
             _httpClient = httpClient;
             _emailService = emailService;
             _commonContext = commonContext;
+            _taskManagerDbContext = taskManagerDbContext;
         }
 
         private int GetOrganizationId()
@@ -2805,321 +2815,615 @@ namespace HRPortal.API.Controllers
             }
         }
 
-        [Authorize]
-        [HttpPost("create-claim")]
-        public async Task<IActionResult> CreateClaim(
-            [FromBody] CreateClaimDto dto,
-            [FromQuery] bool isSubmit = false)
-        {
-            await using var transaction =
-                await _context.Database.BeginTransactionAsync();
+    
 
-            try
-            {
-                var organizationId = GetOrganizationId();
-                if (dto == null)
-                {
-                    return BadRequest(new
+                    [Authorize]
+                    [HttpPost("create-claim")]
+                    public async Task<IActionResult> CreateClaim(
+        [FromBody] CreateClaimDto dto,
+        [FromQuery] bool isSubmit = false)
                     {
-                        success = false,
-                        message = "Request data is required."
-                    });
-                }
+                        await using var transaction =
+                            await _context.Database.BeginTransactionAsync();
 
-                if (dto.EmployeeId <= 0)
-                {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = "Invalid Employee."
-                    });
-                }
-
-                if (dto.ClaimEntries == null || !dto.ClaimEntries.Any())
-                {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = "At least one claim entry is required."
-                    });
-                }
-
-                // ============================================
-                // ONE EMPLOYEE = ONE CLAIM PER MONTH
-                // ============================================
-
-                var claimMonth = dto.ClaimMonth.Month;
-                var claimYear = dto.ClaimMonth.Year;
-
-                var existingClaim = await _context.ClaimMasters
-       .FirstOrDefaultAsync(x =>
-           x.EmployeeId == dto.EmployeeId &&
-           x.ClaimMonth.Month == claimMonth &&
-           x.OrganizationId == organizationId&&
-           x.ClaimYear == claimYear &&
-           x.IsActive);
-
-                if (existingClaim != null &&
-                    existingClaim.Status != "Draft" &&
-                    existingClaim.Status != "Rejected")
-                {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = $"Claim already exists for {dto.ClaimMonth:MMMM yyyy}."
-                    });
-                }
-
-
-
-                // ============================================
-                // CALCULATE TOTAL AMOUNT
-                // ============================================
-
-                decimal totalAmount = dto.ClaimEntries.Sum(x =>
-                    x.TravelAmount +
-                    x.FoodAmount +
-                    (x.Expenses?.Sum(e => e.ExpenseAmount) ?? 0)
-                );
-
-                // ============================================
-                // CREATE CLAIM MASTER
-                // ============================================
-
-                ClaimMaster claim;
-
-                if (existingClaim != null)
-                {
-                    // Existing monthly draft
-                    claim = existingClaim;
-
-                    // Add this save's amount to existing claim total
-                    claim.TotalAmount = (claim.TotalAmount ?? 0) + totalAmount;
-
-                    claim.LastModifiedAt = DateTime.Now;
-                }
-                else
-                {
-                    // First save for this month
-                    claim = new ClaimMaster
-                    {
-                        EmployeeId = dto.EmployeeId,
-                        ClaimMonth = dto.ClaimMonth,
-                        ClaimYear = dto.ClaimMonth.Year,
-                        OrganizationId = organizationId,
-                        CreatedAt = DateTime.Now,
-                        LastModifiedAt = DateTime.Now,
-                        TotalAmount = totalAmount,
-                        IsActive = true,
-
-                        // CreateClaim API always saves as Draft
-                        Status = "Draft",
-
-                        SubmittedAt = null,
-                        CurrentApprovalLevel = null
-                    };
-
-                    _context.ClaimMasters.Add(claim);
-
-                    await _context.SaveChangesAsync();
-
-                    // Generate claim number only once
-                    claim.ClaimNo =
-                        await GenerateClaimNumber("Local Expense Claim");
-
-                    await _context.SaveChangesAsync();
-                }
-
-                // ============================================
-                // EXISTING APPROVAL FLOW STARTS HERE
-                // DON'T CHANGE THIS SECTION
-                // ============================================
-
-                if (isSubmit)
-                {
-                    var employee = await _context.EmployeeMasters
-                        .FirstOrDefaultAsync(x =>
-                            x.EmpId == dto.EmployeeId &&
-                            x.OrganizationId == organizationId);
-
-                    if (employee == null)
-                    {
-                        throw new Exception("Employee not found.");
-                    }
-
-                    // ==========================
-                    // Level 1 - Reporting Manager
-                    // ==========================
-
-                    if (employee.ReportingManagerId.HasValue)
-                    {
-                        _context.ClaimApprovals.Add(new ClaimApproval
+                        try
                         {
-                            ClaimId = claim.ClaimId,
-                            ApprovalLevel = 1,
-                            ApproverEmpId = employee.ReportingManagerId.Value,
-                            Status = "Pending",
-                            CreatedAt = DateTime.Now,
-                            ApprovalToken = Guid.NewGuid()
-                        });
-                    }
+                            // ============================================
+                            // 1. ORGANIZATION AND REQUEST VALIDATION
+                            // ============================================
 
-                    // ==========================
-                    // Level 2 - Manager's Manager
-                    // ==========================
+                            var organizationId = GetOrganizationId();
 
-                    if (employee.ReportingManagerId.HasValue)
-                    {
-                        var manager = await _context.EmployeeMasters
-                            .FirstOrDefaultAsync(x => x.EmpId == employee.ReportingManagerId.Value);
-
-                        if (manager != null &&
-                            manager.ReportingManagerId.HasValue &&
-                            manager.ReportingManagerId.Value > 0)
-                        {
-                            _context.ClaimApprovals.Add(new ClaimApproval
+                            if (organizationId <= 0)
                             {
-                                ClaimId = claim.ClaimId,
-                                ApprovalLevel = 2,
-                                ApproverEmpId = manager.ReportingManagerId.Value,
-                                Status = "Pending",
-                                CreatedAt = DateTime.Now,
-                                ApprovalToken = Guid.NewGuid()
-                            });
-                        }
-                    }
-
-                    // ==========================
-                    // HR1 / HR2 / Accounts
-                    // ==========================
-
-                    var approvalMatrix = await _context.ApprovalMatrix
-                        .Where(x =>
-                            x.OrganizationId == employee.OrganizationId &&
-                            x.IsActive)
-                        .OrderBy(x => x.ApprovalLevel)
-                        .ToListAsync();
-
-                    foreach (var item in approvalMatrix)
-                    {
-                        var approver = await _context.EmployeeMasters
-                            .FirstOrDefaultAsync(x =>
-                                x.OrganizationId == employee.OrganizationId &&
-                                x.DesignationId == item.DesignationId);
-
-                        _context.ClaimApprovals.Add(new ClaimApproval
-                        {
-                            ClaimId = claim.ClaimId,
-                            ApprovalLevel = item.ApprovalLevel,
-                            ApproverEmpId = approver?.EmpId,   // Employee illana NULL save aagum
-                            Status = "Pending",
-                            CreatedAt = DateTime.Now,
-                            ApprovalToken = Guid.NewGuid()
-                        });
-                    }
-
-                    await _context.SaveChangesAsync();
-                    await _context.SaveChangesAsync();
-
-                    // =====================================
-                    // Send Mail To First Approver
-                    // =====================================
-
-                    var firstApproval = await _context.ClaimApprovals
-                        .Where(x => x.ClaimId == claim.ClaimId)
-                        .OrderBy(x => x.ApprovalLevel)
-                        .FirstOrDefaultAsync();
-
-                    if (firstApproval != null)
-                    {
-                        var approver = await _context.EmployeeMasters
-                            .FirstOrDefaultAsync(x => x.EmpId == firstApproval.ApproverEmpId);
-
-                        if (approver != null &&
-                            !string.IsNullOrWhiteSpace(approver.EmailId))
-                        {
-
-                            string departmentName = "-";
-
-                            if (employee.DepartmentId.HasValue)
-                            {
-                                var department = await _context.Department_Master
-                                    .FirstOrDefaultAsync(x => x.DepartmentId == employee.DepartmentId.Value);
-
-                                if (department != null)
+                                return BadRequest(new
                                 {
-                                    departmentName = department.DepartmentName;
+                                    success = false,
+                                    message = "Invalid organization."
+                                });
+                            }
+
+                            if (dto == null)
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message = "Request data is required."
+                                });
+                            }
+
+                            if (dto.EmployeeId <= 0)
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message = "Invalid Employee."
+                                });
+                            }
+
+                            if (dto.ClaimEntries == null ||
+                                !dto.ClaimEntries.Any())
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message = "At least one claim entry is required."
+                                });
+                            }
+
+                            // ============================================
+                            // 2. GET EMPLOYEE FROM COMMON DATABASE
+                            // ============================================
+
+                            var companyUser = await _commonContext.CompanyUsers
+                                .AsNoTracking()
+                                .FirstOrDefaultAsync(x =>
+                                    x.EmpId == dto.EmployeeId &&
+                                    x.OrgId == organizationId &&
+                                    x.Status == "Active");
+
+                            if (companyUser == null)
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message =
+                                        "Active employee not found in this organization."
+                                });
+                            }
+
+                            if (!companyUser.BranchId.HasValue)
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message =
+                                        "Employee branch is not configured."
+                                });
+                            }
+
+                            // ============================================
+                            // 3. VALIDATE SELECTED DEPARTMENT
+                            // ============================================
+
+                            int? selectedDepartmentId = dto.DepartmentId;
+
+                            if (isSubmit &&
+                                (!selectedDepartmentId.HasValue ||
+                                 selectedDepartmentId.Value <= 0))
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message = "Please select a department."
+                                });
+                            }
+
+                            // CompanyUsers.DepartmentId can contain values like:
+                            // "21,15"
+
+                            var employeeDepartmentIds =
+                                (companyUser.DepartmentId ?? string.Empty)
+                                .Split(
+                                    ',',
+                                    StringSplitOptions.RemoveEmptyEntries)
+                                .Select(value =>
+                                {
+                                    return int.TryParse(
+                                        value.Trim(),
+                                        out int departmentId)
+                                        ? departmentId
+                                        : 0;
+                                })
+                                .Where(id => id > 0)
+                                .Distinct()
+                                .ToList();
+
+                            if (selectedDepartmentId.HasValue)
+                            {
+                                if (selectedDepartmentId.Value <= 0 ||
+                                    !employeeDepartmentIds.Contains(
+                                        selectedDepartmentId.Value))
+                                {
+                                    return BadRequest(new
+                                    {
+                                        success = false,
+                                        message =
+                                            "Selected department is not assigned " +
+                                            "to this employee."
+                                    });
                                 }
                             }
 
-                            string purpose = dto.ClaimEntries
-                                .FirstOrDefault()?.Purpose ?? "-";
+                            // ============================================
+                            // 4. ONE EMPLOYEE = ONE CLAIM PER MONTH
+                            // ============================================
 
+                            var claimMonth = dto.ClaimMonth.Month;
+                            var claimYear = dto.ClaimMonth.Year;
 
-                            var baseUrl = _configuration["AppSettings:BaseUrl"];
+                            var existingClaim = await _context.ClaimMasters
+                                .FirstOrDefaultAsync(x =>
+                                    x.EmployeeId == dto.EmployeeId &&
+                                    x.ClaimMonth.Month == claimMonth &&
+                                    x.OrganizationId == organizationId &&
+                                    x.ClaimYear == claimYear &&
+                                    x.IsActive);
 
-                            var approveUrl =
-                                             $"{baseUrl}/api/TravelMaster/mail-approve?token={firstApproval.ApprovalToken}";
+                            if (existingClaim != null &&
+                                existingClaim.Status != "Draft" &&
+                                existingClaim.Status != "Rejected")
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message =
+                                        $"Claim already exists for " +
+                                        $"{dto.ClaimMonth:MMMM yyyy}."
+                                });
+                            }
 
-                            var rejectUrl =
-                                             $"{baseUrl}/api/TravelMaster/reject-form?token={firstApproval.ApprovalToken}";
+                            // Prevent switching department after a claim has
+                            // already been submitted or rejected.
+                            if (existingClaim != null &&
+                                existingClaim.DepartmentId.HasValue &&
+                                selectedDepartmentId.HasValue &&
+                                existingClaim.DepartmentId.Value !=
+                                    selectedDepartmentId.Value)
+                            {
+                                return BadRequest(new
+                                {
+                                    success = false,
+                                    message =
+                                        "The selected department differs from " +
+                                        "the existing claim department."
+                                });
+                            }
 
-                            string body = $@"
+                            // ============================================
+                            // 5. CALCULATE TOTAL AMOUNT
+                            // ============================================
 
-Dear {approver.FullName},
+                            decimal totalAmount = dto.ClaimEntries.Sum(x =>
+                                x.TravelAmount +
+                                x.FoodAmount +
+                                (x.Expenses?.Sum(e => e.ExpenseAmount) ?? 0)
+                            );
+
+                            // ============================================
+                            // 6. CREATE / UPDATE CLAIM MASTER
+                            // ============================================
+
+                            ClaimMaster claim;
+
+                            if (existingClaim != null)
+                            {
+                                claim = existingClaim;
+
+                                // Preserve existing amount-update behaviour.
+                                claim.TotalAmount =
+                                    (claim.TotalAmount ?? 0) + totalAmount;
+
+                                // Save the selected department.
+                                if (selectedDepartmentId.HasValue)
+                                {
+                                    claim.DepartmentId =
+                                        selectedDepartmentId.Value;
+                                }
+
+                                claim.LastModifiedAt = DateTime.Now;
+                            }
+                            else
+                            {
+                                claim = new ClaimMaster
+                                {
+                                    EmployeeId = dto.EmployeeId,
+
+                                    DepartmentId = selectedDepartmentId,
+
+                                    ClaimMonth = dto.ClaimMonth,
+                                    ClaimYear = dto.ClaimMonth.Year,
+                                    OrganizationId = organizationId,
+
+                                    CreatedAt = DateTime.Now,
+                                    LastModifiedAt = DateTime.Now,
+
+                                    TotalAmount = totalAmount,
+                                    IsActive = true,
+
+                                    Status = "Draft",
+                                    SubmittedAt = null,
+                                    CurrentApprovalLevel = null
+                                };
+
+                                _context.ClaimMasters.Add(claim);
+
+                                await _context.SaveChangesAsync();
+
+                                claim.ClaimNo =
+                                    await GenerateClaimNumber(
+                                        "Local Expense Claim");
+
+                                await _context.SaveChangesAsync();
+                            }
+
+                            // ============================================
+                            // 7. CONFIGURATION-BASED APPROVAL FLOW
+                            // ============================================
+
+                            if (isSubmit)
+                            {
+                                // ----------------------------------------
+                                // 7.1 Get branch
+                                // ----------------------------------------
+
+                                var branch = await _commonContext.Branches
+                                    .AsNoTracking()
+                                    .FirstOrDefaultAsync(x =>
+                                        x.BranchId == companyUser.BranchId.Value &&
+                                        x.OrgId == organizationId);
+
+                                if (branch == null ||
+                                    string.IsNullOrWhiteSpace(branch.BranchName))
+                                {
+                                    return BadRequest(new
+                                    {
+                                        success = false,
+                                        message = "Branch configuration not found."
+                                    });
+                                }
+
+                                var branchName = branch.BranchName.Trim();
+
+                                // ----------------------------------------
+                                // 7.2 Get selected department configuration
+                                // ----------------------------------------
+
+                                const string moduleCode = "travel_portal";
+
+                                var departmentConfig =
+                                    await _context.DepartmentApprovalConfigs
+                                        .FirstOrDefaultAsync(x =>
+                                            x.OrganizationId == organizationId &&
+                                            x.ModuleCode == moduleCode &&
+                                            x.DepartmentId ==
+                                                selectedDepartmentId!.Value &&
+                                            x.IsActive &&
+                                            x.Branch != null &&
+                                            x.Branch.Trim() == branchName);
+
+                                if (departmentConfig == null)
+                                {
+                                    return BadRequest(new
+                                    {
+                                        success = false,
+                                        message =
+                                            "Approval configuration not found " +
+                                            "for the selected department.",
+                                        departmentId = selectedDepartmentId,
+                                        branch = branchName
+                                    });
+                                }
+
+                                if (departmentConfig.TotalApprovalLevels <= 0)
+                                {
+                                    return BadRequest(new
+                                    {
+                                        success = false,
+                                        message =
+                                            "Approval levels are not configured " +
+                                            "for the selected department."
+                                    });
+                                }
+
+                                // ----------------------------------------
+                                // 7.3 Get employee approval configuration
+                                // ----------------------------------------
+
+                                var employeeApprovalConfigs =
+                                    await _context.EmployeeApprovalConfigs
+                                        .Include(x => x.Approvers)
+                                        .Where(x =>
+                                            x.OrganizationId == organizationId &&
+                                            x.DepartmentApprovalConfigId ==
+                                                departmentConfig.Id &&
+                                            x.EmployeeId == dto.EmployeeId &&
+                                            x.IsActive)
+                                        .OrderBy(x => x.ApprovalLevel)
+                                        .ToListAsync();
+
+                                if (!employeeApprovalConfigs.Any())
+                                {
+                                    return BadRequest(new
+                                    {
+                                        success = false,
+                                        message =
+                                            "No employee approval configuration found " +
+                                            $"for employee {dto.EmployeeId} " +
+                                            $"in department {selectedDepartmentId}."
+                                    });
+                                }
+
+                                // ----------------------------------------
+                                // 7.4 Validate approval levels
+                                // ----------------------------------------
+
+                                var configuredLevels =
+                                    employeeApprovalConfigs
+                                        .Select(x => x.ApprovalLevel)
+                                        .Distinct()
+                                        .OrderBy(x => x)
+                                        .ToList();
+
+                                var expectedLevels =
+                                    departmentConfig.TotalApprovalLevels;
+
+                                var expectedSequence =
+                                    Enumerable.Range(1, expectedLevels).ToList();
+
+                                if (!configuredLevels.SequenceEqual(
+                                        expectedSequence))
+                                {
+                                    return BadRequest(new
+                                    {
+                                        success = false,
+                                        message =
+                                            "Configured approval levels do not match " +
+                                            "the department configuration.",
+                                        expectedLevels,
+                                        configuredLevels
+                                    });
+                                }
+
+                                // ----------------------------------------
+                                // 7.5 Build approval records
+                                // ----------------------------------------
+
+                                var newApprovals = new List<ClaimApproval>();
+
+                                foreach (var levelConfig in employeeApprovalConfigs)
+                                {
+                                    var approverIds = levelConfig.Approvers
+                                        .Where(x => x.IsActive)
+                                        .OrderBy(x => x.ApprovalOrder)
+                                        .Select(x => x.ApproverEmployeeId)
+                                        .Distinct()
+                                        .ToList();
+
+                                    if (!approverIds.Any())
+                                    {
+                                        return BadRequest(new
+                                        {
+                                            success = false,
+                                            message =
+                                                "No active approver configured for " +
+                                                $"approval level {levelConfig.ApprovalLevel}."
+                                        });
+                                    }
+
+                                    foreach (var approverId in approverIds)
+                                    {
+                                        if (approverId == dto.EmployeeId)
+                                        {
+                                            return BadRequest(new
+                                            {
+                                                success = false,
+                                                message =
+                                                    "An employee cannot approve " +
+                                                    "their own claim."
+                                            });
+                                        }
+
+                                        var approver = await _commonContext.CompanyUsers
+                                            .AsNoTracking()
+                                            .FirstOrDefaultAsync(x =>
+                                                x.EmpId == approverId &&
+                                                x.OrgId == organizationId &&
+                                                x.Status == "Active");
+
+                                        if (approver == null)
+                                        {
+                                            return BadRequest(new
+                                            {
+                                                success = false,
+                                                message =
+                                                    $"Approver employee {approverId} " +
+                                                    "does not exist or is inactive " +
+                                                    "in this organization."
+                                            });
+                                        }
+
+                                        newApprovals.Add(new ClaimApproval
+                                        {
+                                            ClaimId = claim.ClaimId,
+
+                                            // Associate this approval with the
+                                            // selected department configuration.
+                                            DepartmentApprovalConfigId =
+                                                departmentConfig.Id,
+
+                                            ApprovalLevel =
+                                                levelConfig.ApprovalLevel,
+
+                                            ApproverEmpId = approverId,
+
+                                            Status = "Pending",
+                                            Remarks = null,
+                                            ActionDate = null,
+
+                                            CreatedAt = DateTime.Now,
+                                            ApprovalToken = Guid.NewGuid()
+                                        });
+                                    }
+                                }
+
+                                // ----------------------------------------
+                                // 7.6 Remove previous approvals on resubmit
+                                // ----------------------------------------
+
+                                var oldApprovals =
+                                    await _context.ClaimApprovals
+                                        .Where(x => x.ClaimId == claim.ClaimId)
+                                        .ToListAsync();
+
+                                if (oldApprovals.Any())
+                                {
+                                    _context.ClaimApprovals.RemoveRange(oldApprovals);
+                                }
+
+                                _context.ClaimApprovals.AddRange(newApprovals);
+
+                                // ----------------------------------------
+                                // 7.7 Update claim status
+                                // ----------------------------------------
+
+                                var firstLevel = configuredLevels.First();
+
+                                claim.DepartmentId = selectedDepartmentId.Value;
+                                claim.Status = "Pending";
+                                claim.SubmittedAt = DateTime.Now;
+                                claim.CurrentApprovalLevel = firstLevel;
+                                claim.LastModifiedAt = DateTime.Now;
+
+                                await _context.SaveChangesAsync();
+
+                    // ----------------------------------------
+                    // 7.8 Department display value
+                    // ----------------------------------------
+
+                    string departmentName = "N/A";
+
+                    try
+                    {
+                        if (int.TryParse(companyUser.DepartmentId, out int departmentId))
+                        {
+                            departmentName = await _commonContext.Departments
+                                .Where(d => d.Id == departmentId)
+                                .Select(d => d.DepartmentName)
+                                .FirstOrDefaultAsync() ?? "N/A";
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error fetching department name: {ex.Message}");
+                    }
+
+                    // ----------------------------------------
+                    // 7.9 Get employee details for email
+                    // ----------------------------------------
+
+                    var employeeName =
+                                    companyUser.FullName ?? "-";
+
+                                var employeeCode =
+                                    companyUser.EmpCode ?? "-";
+
+                                var firstLevelApprovals = newApprovals
+                                    .Where(x => x.ApprovalLevel == firstLevel)
+                                    .ToList();
+
+                                string purpose = dto.ClaimEntries
+                                    .FirstOrDefault()?.Purpose ?? "-";
+
+                                var baseUrl =
+                                    _configuration["AppSettings:BaseUrl"];
+
+                                if (string.IsNullOrWhiteSpace(baseUrl))
+                                {
+                                    throw new Exception(
+                                        "AppSettings:BaseUrl is not configured.");
+                                }
+
+                                // ----------------------------------------
+                                // 7.10 Send email to first-level approvers
+                                // ----------------------------------------
+
+                                foreach (var firstApproval in firstLevelApprovals)
+                                {
+                                    var approver = await _commonContext.CompanyUsers
+                                        .AsNoTracking()
+                                        .FirstOrDefaultAsync(x =>
+                                            x.EmpId == firstApproval.ApproverEmpId &&
+                                            x.OrgId == organizationId &&
+                                            x.Status == "Active");
+
+                                    if (approver == null ||
+                                        string.IsNullOrWhiteSpace(approver.Email))
+                                    {
+                                        continue;
+                                    }
+
+                                    var approveUrl =
+                                        $"{baseUrl}/api/TravelMaster/mail-approve" +
+                                        $"?token={firstApproval.ApprovalToken}";
+
+                                    var rejectUrl =
+                                        $"{baseUrl}/api/TravelMaster/reject-form" +
+                                        $"?token={firstApproval.ApprovalToken}";
+
+                                    string body = $@"
+Dear {approver.FullName ?? "Approver"},
 
 <br/><br/>
 
-A new Local expense claim requires your approval.
+A new Local Expense Claim requires your approval.
 
 <br/><br/>
 
 <b>Employee Details</b>
-
 <ul>
-    <li>Employee Name : {employee.FullName}</li>
-    <li>Employee ID : {employee.EmployeeCode}</li>
-    <li>Department : {departmentName}</li>
+    <li>Employee Name: {employeeName}</li>
+    <li>Employee ID: {employeeCode}</li>
+   <li>Department: {departmentName}</li>
 </ul>
 
 <b>Claim Details</b>
-
 <ul>
-    <li>Claim Number : {claim.ClaimNo}</li>
-    <li>Claim Type : Local Expense Claim</li>
-    <li>Claim Month : {claim.ClaimMonth:MMM-yyyy}</li>
-    <li>Amount : ₹{claim.TotalAmount:N2}</li>
-    <li>Status : Pending Approval</li>
+    <li>Claim Number: {claim.ClaimNo}</li>
+    <li>Claim Type: Local Expense Claim</li>
+    <li>Claim Month: {claim.ClaimMonth:MMM-yyyy}</li>
+    <li>Amount: ₹{claim.TotalAmount:N2}</li>
+    <li>Status: Pending Approval</li>
+    <li>Approval Level: {firstApproval.ApprovalLevel}</li>
 </ul>
 
 <b>Purpose</b>
-
 <p>{purpose}</p>
 
 <br/>
 
 <a href='{approveUrl}'
-style='background:green;
-color:white;
-padding:10px 20px;
-text-decoration:none;
-border-radius:5px;'>
-
+style='background:green;color:white;padding:10px 20px;
+text-decoration:none;border-radius:5px;'>
 Approve
-
 </a>
 
 &nbsp;&nbsp;
 
 <a href='{rejectUrl}'
-style='background:red;
-color:white;
-padding:10px 20px;
-text-decoration:none;
-border-radius:5px;'>
-
+style='background:red;color:white;padding:10px 20px;
+text-decoration:none;border-radius:5px;'>
 Reject
-
 </a>
 
 <br/><br/>
@@ -3128,263 +3432,233 @@ Regards,<br/>
 Local Expense Claim Portal
 ";
 
-                            await _emailService.SendEmailAsync(
-                                approver.EmailId,
-                                $"Claim Approval Required - {claim.ClaimNo}",
-                                body);
-                        }
-                    }
-                }
-
-                // ===========================
-                // Save All Entries
-                // ===========================
-                var savedTravelIds = new List<object>();
-
-                foreach (var entry in dto.ClaimEntries)
-                {
-                    // ===========================
-                    // GET VEHICLE RATE
-                    // ===========================
-
-                    decimal? appliedRatePerKm = null;
-                    decimal travelAmount = 0;
-
-                    // Bike = 2
-                    // Car = 3
-                    // Rate required only for Bike and Car
-                    if (entry.VehicleTypeId == 2 || entry.VehicleTypeId == 3)
-                    {
-                        // FuelTypeId mandatory for Bike / Car
-                        if (!entry.FuelTypeId.HasValue || entry.FuelTypeId.Value <= 0)
-                        {
-                            return BadRequest(new
-                            {
-                                success = false,
-                                message = $"Fuel Type is required for VehicleTypeId {entry.VehicleTypeId}."
-                            });
-                        }
-
-                        var currentRate = await _context.VehicleRateMasters
-                            .Where(x =>
-                                x.VehicleTypeId == entry.VehicleTypeId &&
-                                x.FuelTypeId == entry.FuelTypeId.Value &&
-                                x.IsActive)
-                            .OrderByDescending(x => x.ValidFrom)
-                            .FirstOrDefaultAsync();
-
-                        if (currentRate == null)
-                        {
-                            return BadRequest(new
-                            {
-                                success = false,
-                                message =
-                                    $"Vehicle rate is not configured for VehicleTypeId {entry.VehicleTypeId} " +
-                                    $"and FuelTypeId {entry.FuelTypeId.Value}."
-                            });
-                        }
-
-                        // ===========================
-                        // RATE USED FOR THIS CLAIM
-                        // ===========================
-
-                        appliedRatePerKm = currentRate.AmountPerKm;
-
-                        // ===========================
-                        // CALCULATE TRAVEL AMOUNT
-                        // ===========================
-
-                        travelAmount =
-                            entry.KmRun * currentRate.AmountPerKm?? 0;
-                    }
-                    else
-                    {
-                        // Bus / Train / other vehicles
-                        // No vehicle rate required
-
-                        appliedRatePerKm = null;
-
-                        // If manually entered amount is allowed
-                        travelAmount = entry.TravelAmount;
-                    }
-
-
-                    // ===========================
-                    // SAVE TRAVEL
-                    // ===========================
-
-                    var travel = new ClaimTravel
-                    {
-                        ClaimId = claim.ClaimId,
-
-                        VehicleTypeId = entry.VehicleTypeId,
-
-                        FuelTypeId =
-                            entry.FuelTypeId.HasValue &&
-                            entry.FuelTypeId.Value > 0
-                                ? entry.FuelTypeId.Value
-                                : null,
-
-                        VehicleDetailId =
-                            entry.VehicleDetailId.HasValue &&
-                            entry.VehicleDetailId.Value > 0
-                                ? entry.VehicleDetailId.Value
-                                : null,
-
-                        VehicleNumber =
-                            string.IsNullOrWhiteSpace(entry.VehicleNumber)
-                                ? null
-                                : entry.VehicleNumber,
-
-                        TravelDate = entry.TravelDate,
-
-                        Purpose = entry.Purpose,
-
-                        FromLocation = entry.FromLocation,
-
-                        ToLocation = entry.ToLocation,
-
-                        KmRun = entry.KmRun,
-
-                        // ⭐ CALCULATED AMOUNT
-                        Amount = travelAmount,
-
-                        // ⭐ RATE USED
-                        AppliedRatePerKm = appliedRatePerKm,
-
-                        IsActive = true
-                    };
-
-                    _context.ClaimTravels.Add(travel);
-
-                    await _context.SaveChangesAsync();
-
-                    // Save so TravelId gets generated
-                    await _context.SaveChangesAsync();
-
-                    
-
-                    savedTravelIds.Add(new
-                    {
-                        travelId = travel.TravelId,
-                        travelDate = travel.TravelDate
-                    });
-
-
-
-                    // ============================================
-                    // FOOD DETAILS
-                    // OPTIONAL
-                    // ============================================
-
-                    if (entry.FoodTypeId.HasValue &&
-                        entry.FoodTypeId.Value > 0 &&
-                        entry.FoodAmount > 0)
-                    {
-                        var food = new ClaimFood
-                        {
-                            TravelId = travel.TravelId,
-
-                            ClaimId = claim.ClaimId,
-
-                            FoodDate = entry.TravelDate,
-
-                            FoodTypeId = entry.FoodTypeId.Value,
-
-                            Amount = entry.FoodAmount,
-
-                            IsActive = true
-                        };
-
-                        _context.ClaimFoods.Add(food);
-
-                        await _context.SaveChangesAsync();
-                    }
-
-
-                    // ============================================
-                    // MULTIPLE EXPENSES
-                    // ============================================
-
-                    if (entry.Expenses != null && entry.Expenses.Any())
-                    {
-                        foreach (var expenseItem in entry.Expenses)
-                        {
-                            // Ignore empty expense
-                            if (string.IsNullOrWhiteSpace(expenseItem.ExpenseType) ||
-                                expenseItem.ExpenseAmount <= 0)
-                            {
-                                continue;
+                                    await _emailService.SendEmailAsync(
+                                        approver.Email,
+                                        $"Claim Approval Required - {claim.ClaimNo}",
+                                        body);
+                                }
                             }
 
-                            var expense = new ClaimExpense
+                            // ============================================
+                            // 8. SAVE TRAVEL ENTRIES
+                            // ============================================
+
+                            var savedTravelIds = new List<object>();
+
+                            foreach (var entry in dto.ClaimEntries)
                             {
-                                ClaimId = claim.ClaimId,
+                                decimal? appliedRatePerKm = null;
+                                decimal travelAmount = 0;
 
-                                // IMPORTANT
-                                // Expense belongs to this Travel
-                                TravelId = travel.TravelId,
+                                // Bike = 2; Car = 3.
+                                // Fuel rate is required only for Bike and Car.
 
-                                ExpenseDate = entry.TravelDate,
+                                if (entry.VehicleTypeId == 2 ||
+                                    entry.VehicleTypeId == 3)
+                                {
+                                    if (!entry.FuelTypeId.HasValue ||
+                                        entry.FuelTypeId.Value <= 0)
+                                    {
+                                        return BadRequest(new
+                                        {
+                                            success = false,
+                                            message =
+                                                $"Fuel Type is required for VehicleTypeId " +
+                                                $"{entry.VehicleTypeId}."
+                                        });
+                                    }
 
-                                ExpenseType = expenseItem.ExpenseType,
+                                    var currentRate =
+                                        await _context.VehicleRateMasters
+                                            .Where(x =>
+                                                x.VehicleTypeId == entry.VehicleTypeId &&
+                                                x.FuelTypeId == entry.FuelTypeId.Value &&
+                                                x.IsActive)
+                                            .OrderByDescending(x => x.ValidFrom)
+                                            .FirstOrDefaultAsync();
 
-                                InvoiceNo = expenseItem.InvoiceNo,
+                                    if (currentRate == null)
+                                    {
+                                        return BadRequest(new
+                                        {
+                                            success = false,
+                                            message =
+                                                "Vehicle rate is not configured for " +
+                                                $"VehicleTypeId {entry.VehicleTypeId} " +
+                                                $"and FuelTypeId {entry.FuelTypeId.Value}."
+                                        });
+                                    }
 
-                                Description = expenseItem.Description,
+                                    appliedRatePerKm = currentRate.AmountPerKm;
 
-                                Purpose = expenseItem.ExpensePurpose,
+                                    travelAmount =
+                                        Convert.ToDecimal(entry.KmRun) *
+                                        currentRate.AmountPerKm;
+                                }
+                                else
+                                {
+                                    appliedRatePerKm = null;
+                                    travelAmount = entry.TravelAmount;
+                                }
 
-                                Amount = expenseItem.ExpenseAmount,
+                                // ----------------------------------------
+                                // Save travel
+                                // ----------------------------------------
 
-                                created_at = DateTime.Now,
+                                var travel = new ClaimTravel
+                                {
+                                    ClaimId = claim.ClaimId,
 
-                                IsActive = true
-                            };
+                                    VehicleTypeId = entry.VehicleTypeId,
 
-                            _context.ClaimExpenses.Add(expense);
+                                    FuelTypeId =
+                                        entry.FuelTypeId.HasValue &&
+                                        entry.FuelTypeId.Value > 0
+                                            ? entry.FuelTypeId.Value
+                                            : null,
+
+                                    VehicleDetailId =
+                                        entry.VehicleDetailId.HasValue &&
+                                        entry.VehicleDetailId.Value > 0
+                                            ? entry.VehicleDetailId.Value
+                                            : null,
+
+                                    VehicleNumber =
+                                        string.IsNullOrWhiteSpace(entry.VehicleNumber)
+                                            ? null
+                                            : entry.VehicleNumber,
+
+                                    TravelDate = entry.TravelDate,
+                                    Purpose = entry.Purpose,
+
+                                    FromLocation = entry.FromLocation,
+                                    ToLocation = entry.ToLocation,
+
+                                    KmRun = entry.KmRun,
+
+                                    Amount = travelAmount,
+                                    AppliedRatePerKm = appliedRatePerKm,
+
+                                    IsActive = true
+                                };
+
+                                _context.ClaimTravels.Add(travel);
+
+                                await _context.SaveChangesAsync();
+
+                                savedTravelIds.Add(new
+                                {
+                                    travelId = travel.TravelId,
+                                    travelDate = travel.TravelDate
+                                });
+
+                                // ========================================
+                                // 9. SAVE FOOD DETAILS
+                                // ========================================
+
+                                if (entry.FoodTypeId.HasValue &&
+                                    entry.FoodTypeId.Value > 0 &&
+                                    entry.FoodAmount > 0)
+                                {
+                                    var food = new ClaimFood
+                                    {
+                                        TravelId = travel.TravelId,
+                                        ClaimId = claim.ClaimId,
+
+                                        FoodDate = entry.TravelDate,
+                                        FoodTypeId = entry.FoodTypeId.Value,
+                                        Amount = entry.FoodAmount,
+
+                                        IsActive = true
+                                    };
+
+                                    _context.ClaimFoods.Add(food);
+
+                                    await _context.SaveChangesAsync();
+                                }
+
+                                // ========================================
+                                // 10. SAVE MULTIPLE EXPENSES
+                                // ========================================
+
+                                if (entry.Expenses != null &&
+                                    entry.Expenses.Any())
+                                {
+                                    foreach (var expenseItem in entry.Expenses)
+                                    {
+                                        if (string.IsNullOrWhiteSpace(
+                                                expenseItem.ExpenseType) ||
+                                            expenseItem.ExpenseAmount <= 0)
+                                        {
+                                            continue;
+                                        }
+
+                                        var expense = new ClaimExpense
+                                        {
+                                            ClaimId = claim.ClaimId,
+                                            TravelId = travel.TravelId,
+
+                                            ExpenseDate = entry.TravelDate,
+
+                                            ExpenseType = expenseItem.ExpenseType,
+                                            InvoiceNo = expenseItem.InvoiceNo,
+                                            Description = expenseItem.Description,
+                                            Purpose = expenseItem.ExpensePurpose,
+
+                                            Amount = expenseItem.ExpenseAmount,
+
+                                            created_at = DateTime.Now,
+                                            IsActive = true
+                                        };
+
+                                        _context.ClaimExpenses.Add(expense);
+                                    }
+
+                                    await _context.SaveChangesAsync();
+                                }
+                            }
+
+                            // ============================================
+                            // 11. COMMIT TRANSACTION
+                            // ============================================
+
+                            await transaction.CommitAsync();
+
+                            return Ok(new
+                            {
+                                success = true,
+
+                                message = isSubmit
+                                    ? "Claim submitted successfully."
+                                    : "Claim saved as draft successfully.",
+
+                                data = new
+                                {
+                                    claim.ClaimId,
+                                    claim.ClaimNo,
+                                    claim.Status,
+                                    claim.TotalAmount,
+                                    claim.DepartmentId,
+                                    claim.CurrentApprovalLevel,
+                                    claimEntries = savedTravelIds
+                                }
+                            });
                         }
+                        catch (Exception ex)
+                        {
+                            await transaction.RollbackAsync();
 
-                        await _context.SaveChangesAsync();
+                            return StatusCode(500, new
+                            {
+                                success = false,
+                                message = "Error while saving claim.",
+                                error = ex.InnerException?.Message ?? ex.Message
+                            });
+                        }
                     }
-                }
-
-                await transaction.CommitAsync();
-
-                return Ok(new
-                {
-                    success = true,
-                    message = isSubmit
-                        ? "Claim submitted successfully."
-                        : "Claim saved as draft successfully.",
-
-                    data = new
-                    {
-                        claim.ClaimId,
-                        claim.ClaimNo,
-                        claim.Status,
-                        claim.TotalAmount,
-                        claimEntries = savedTravelIds
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                await transaction.RollbackAsync();
-
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "Error while saving claim.",
-                    error = ex.InnerException?.Message ?? ex.Message
-                });
-            }
-        }
 
 
-
-
-        [Authorize]
+                    [Authorize]
         [HttpGet("my-drafts")]
         public async Task<IActionResult> GetMyDrafts()
         {
@@ -5242,7 +5516,7 @@ Local Expense Claim Portal
             }
         }
 
-       
+
 
         [Authorize]
         [HttpPut("submit-draft/{claimId}")]
@@ -5254,6 +5528,18 @@ Local Expense Claim Portal
             try
             {
                 int organizationId = GetOrganizationId();
+
+                if (organizationId <= 0)
+                {
+                    await transaction.RollbackAsync();
+
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid organization ID."
+                    });
+                }
+
                 // =====================================
                 // 1. GET DRAFT / REJECTED CLAIM
                 // =====================================
@@ -5261,6 +5547,7 @@ Local Expense Claim Portal
                 var claim = await _context.ClaimMasters
                     .FirstOrDefaultAsync(x =>
                         x.ClaimId == claimId &&
+                        x.OrganizationId == organizationId &&
                         (x.Status == "Draft" || x.Status == "Rejected") &&
                         x.IsActive);
 
@@ -5274,51 +5561,94 @@ Local Expense Claim Portal
                         message = "Claim not found."
                     });
                 }
-                  
+
                 // =====================================
-                // 2. CHECK RESUBMIT;
+                // 2. VALIDATE CLAIM OWNERSHIP
+                // =====================================
+
+                var role =
+                    User.FindFirst(
+                        System.Security.Claims.ClaimTypes.Role)?.Value
+                    ?? User.FindFirst("role")?.Value;
+
+                bool isAdmin =
+                    string.Equals(
+                        role,
+                        "Admin",
+                        StringComparison.OrdinalIgnoreCase)
+                    ||
+                    string.Equals(
+                        role,
+                        "SuperAdmin",
+                        StringComparison.OrdinalIgnoreCase)
+                    ||
+                    string.Equals(
+                        role,
+                        "Super Admin",
+                        StringComparison.OrdinalIgnoreCase);
+
+                if (!isAdmin)
+                {
+                    var employeeIdClaim =
+                        User.FindFirst("EmpId")?.Value;
+
+                    if (!int.TryParse(
+                            employeeIdClaim,
+                            out int loggedInEmployeeId) ||
+                        loggedInEmployeeId <= 0)
+                    {
+                        await transaction.RollbackAsync();
+
+                        return Unauthorized(new
+                        {
+                            success = false,
+                            message =
+                                "Logged-in employee ID not found in token."
+                        });
+                    }
+
+                    if (claim.EmployeeId != loggedInEmployeeId)
+                    {
+                        await transaction.RollbackAsync();
+
+                        return StatusCode(403, new
+                        {
+                            success = false,
+                            message =
+                                "You are not authorized to submit this claim."
+                        });
+                    }
+                }
+
+                // =====================================
+                // 3. CHECK RESUBMISSION
                 // =====================================
 
                 bool isResubmit =
-                    claim.Status.Equals(
+                    string.Equals(
+                        claim.Status,
                         "Rejected",
                         StringComparison.OrdinalIgnoreCase);
 
                 // =====================================
-                // 3. REMOVE OLD APPROVAL RECORDS
+                // 4. VALIDATE SELECTED DEPARTMENT
                 // =====================================
 
-                var oldApprovals = await _context.ClaimApprovals
-                    .Where(x => x.ClaimId == claimId)
-                    .ToListAsync();
-
-                if (oldApprovals.Any())
+                if (!claim.DepartmentId.HasValue ||
+                    claim.DepartmentId.Value <= 0)
                 {
-                    _context.ClaimApprovals.RemoveRange(oldApprovals);
+                    await transaction.RollbackAsync();
 
-                    await _context.SaveChangesAsync();
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "Department is not selected for this claim. " +
+                            "Please select a department and update the claim."
+                    });
                 }
 
-                // =====================================
-                // 4. RESET CLAIM STATUS
-                // =====================================
-
-                claim.Status = "Pending";
-
-                // Don't set this to 1 yet.
-                // We will set it after creating approvals.
-
-                claim.CurrentApprovalLevel = null;
-
-                claim.SubmittedAt = DateTime.Now;
-
-                claim.RejectedAt = null;
-
-                claim.ApprovedAt = null;
-
-                claim.LastModifiedAt = DateTime.Now;
-
-                await _context.SaveChangesAsync();
+                int selectedDepartmentId = claim.DepartmentId.Value;
 
                 // =====================================
                 // 5. GET CLAIM EMPLOYEE FROM COMMON DB
@@ -5328,9 +5658,9 @@ Local Expense Claim Portal
                     .AsNoTracking()
                     .FirstOrDefaultAsync(x =>
                         x.EmpId == claim.EmployeeId &&
-                        x.OrgId == claim.OrganizationId &&
-                        x.Status != null &&
-                        x.Status.ToLower() == "active");
+                        x.OrgId == organizationId &&
+                        (x.Status == null ||
+                         x.Status.Trim().ToUpper() == "ACTIVE"));
 
                 if (employee == null)
                 {
@@ -5339,28 +5669,90 @@ Local Expense Claim Portal
                     return BadRequest(new
                     {
                         success = false,
-                        message = "Claim employee not found in Common Login database."
+                        message =
+                            "Claim employee not found or inactive in Common Login database."
                     });
                 }
 
-                //if (string.IsNullOrWhiteSpace(employee.Branch) ||
-                    //string.IsNullOrWhiteSpace(employee.Department))
+                // =====================================
+                // 6. VALIDATE EMPLOYEE BRANCH
+                // =====================================
+
+                if (!employee.BranchId.HasValue)
                 {
                     await transaction.RollbackAsync();
 
                     return BadRequest(new
                     {
                         success = false,
-                        message = "Employee branch or department is missing."
+                        message =
+                            "Employee branch is missing."
                     });
                 }
 
+                int employeeBranchId = employee.BranchId.Value;
+
+                var branch = await _commonContext.Branches
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.BranchId == employeeBranchId &&
+                        x.OrgId == organizationId);
+
+                if (branch == null ||
+                    string.IsNullOrWhiteSpace(branch.BranchName))
+                {
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "Employee branch was not found for this organization."
+                    });
+                }
+
+                string branchName = branch.BranchName.Trim();
 
                 // =====================================
-                // 6. GET DEPARTMENT APPROVAL CONFIG
+                // 7. VALIDATE SELECTED DEPARTMENT
+                //    AGAINST EMPLOYEE DEPARTMENT IDs
                 // =====================================
 
-                // Local Expense uses travel_portal module code.
+                // CompanyUsers.DepartmentId may contain values such as:
+                // "21,15"
+
+                var employeeDepartmentIds =
+                    (employee.DepartmentId ?? string.Empty)
+                        .Split(
+                            ',',
+                            StringSplitOptions.RemoveEmptyEntries |
+                            StringSplitOptions.TrimEntries)
+                        .Select(value =>
+                        {
+                            return int.TryParse(value, out int departmentId)
+                                ? departmentId
+                                : 0;
+                        })
+                        .Where(departmentId => departmentId > 0)
+                        .Distinct()
+                        .ToList();
+
+                if (!employeeDepartmentIds.Contains(selectedDepartmentId))
+                {
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "The selected department is not assigned to this employee."
+                    });
+                }
+
+                // =====================================
+                // 8. GET APPROVAL CONFIGURATION
+                //    BY SELECTED DEPARTMENT ID
+                // =====================================
 
                 const string moduleCode = "travel_portal";
 
@@ -5368,10 +5760,12 @@ Local Expense Claim Portal
                     await _context.DepartmentApprovalConfigs
                         .AsNoTracking()
                         .FirstOrDefaultAsync(x =>
-                            x.OrganizationId == claim.OrganizationId &&
+                            x.OrganizationId == organizationId &&
                             x.ModuleCode == moduleCode &&
-                            //x.Branch == employee.Branch!.Trim() &&
-                            x.Department == employee.Department!.Trim() &&
+                            x.DepartmentId == selectedDepartmentId &&
+                            x.Branch != null &&
+                            x.Branch.Trim().ToLower() ==
+                                branchName.ToLower() &&
                             x.IsActive);
 
                 if (departmentConfig == null)
@@ -5382,35 +5776,11 @@ Local Expense Claim Portal
                     {
                         success = false,
                         message =
-                            "Approval configuration not found for this module, branch and department."
+                            "Approval configuration not found for the selected department and branch."
                     });
                 }
 
-
-                // =====================================
-                // 7. GET EMPLOYEE APPROVAL CONFIGURATION
-                // =====================================
-
-                var approvalConfigs =
-                    await _context.EmployeeApprovalConfigs
-                        .AsNoTracking()
-                        .Where(x =>
-                            x.OrganizationId == claim.OrganizationId &&
-                            x.DepartmentApprovalConfigId == departmentConfig.Id &&
-                            x.EmployeeId == claim.EmployeeId &&
-                            x.IsActive)
-                        .OrderBy(x => x.ApprovalLevel)
-                        .ToListAsync();
-
-
-                // =====================================
-                // 8. VALIDATE APPROVAL LEVELS
-                // =====================================
-
-                // The employee must have a configuration
-                // for every level configured for the department.
-
-                if (approvalConfigs.Count != departmentConfig.TotalApprovalLevels)
+                if (departmentConfig.TotalApprovalLevels <= 0)
                 {
                     await transaction.RollbackAsync();
 
@@ -5418,13 +5788,45 @@ Local Expense Claim Portal
                     {
                         success = false,
                         message =
-                            $"Employee approval configuration is incomplete. " +
+                            "Department approval levels are not configured correctly."
+                    });
+                }
+
+                // =====================================
+                // 9. GET EMPLOYEE APPROVAL CONFIGURATION
+                //    FOR THIS DEPARTMENT ONLY
+                // =====================================
+
+                var approvalConfigs =
+                    await _context.EmployeeApprovalConfigs
+                        .AsNoTracking()
+                        .Where(x =>
+                            x.OrganizationId == organizationId &&
+                            x.DepartmentApprovalConfigId ==
+                                departmentConfig.Id &&
+                            x.EmployeeId == claim.EmployeeId &&
+                            x.IsActive)
+                        .OrderBy(x => x.ApprovalLevel)
+                        .ToListAsync();
+
+                // =====================================
+                // 10. VALIDATE APPROVAL LEVEL COUNT
+                // =====================================
+
+                if (approvalConfigs.Count !=
+                    departmentConfig.TotalApprovalLevels)
+                {
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "Employee approval configuration is incomplete. " +
                             $"Expected {departmentConfig.TotalApprovalLevels} levels, " +
                             $"but found {approvalConfigs.Count}."
                     });
                 }
-
-                // Levels must be continuous: 1, 2, 3...
 
                 for (int i = 0; i < approvalConfigs.Count; i++)
                 {
@@ -5441,21 +5843,15 @@ Local Expense Claim Portal
                     }
                 }
 
-
                 // =====================================
-                // 9. CREATE APPROVAL RECORDS
+                // 11. VALIDATE APPROVERS AND BUILD RECORDS
                 // =====================================
 
-                // Stores configured approvers for each level.
-                // Used later to select the first-level approvers
-                // who should receive the initial notification.
-
-                var approverIdsByLevel = new Dictionary<int, List<int>>();
+                var claimApprovalRecords = new List<ClaimApproval>();
 
                 foreach (var config in approvalConfigs)
                 {
-                    // Initially, we support AnyOne only.
-                    // A level completes when any one approver approves.
+                    // Current implementation supports AnyOne only.
 
                     if (!string.Equals(
                             config.ApprovalRule,
@@ -5471,9 +5867,6 @@ Local Expense Claim Portal
                                 $"Approval Level {config.ApprovalLevel} must use the AnyOne approval rule."
                         });
                     }
-
-
-                    // Get all approvers configured for this level.
 
                     var assignments =
                         await _context.EmployeeApprovalConfigApprovers
@@ -5496,11 +5889,9 @@ Local Expense Claim Portal
                         });
                     }
 
-
                     var approverIds = assignments
                         .Select(x => x.ApproverEmployeeId)
                         .ToList();
-
 
                     // Prevent duplicate approvers.
 
@@ -5516,8 +5907,7 @@ Local Expense Claim Portal
                         });
                     }
 
-
-                    // The claim employee cannot approve their own claim.
+                    // Employee cannot approve their own claim.
 
                     if (approverIds.Contains(claim.EmployeeId))
                     {
@@ -5531,23 +5921,25 @@ Local Expense Claim Portal
                         });
                     }
 
+                    // Validate approvers in the Common Login DB.
 
-                    // Validate every approver against Common Login DB.
-                    // Approvers must be active employees of the same organization.
+                    var uniqueApproverIds = approverIds
+                        .Distinct()
+                        .ToList();
 
                     var validApproverIds =
                         await _commonContext.CompanyUsers
                             .AsNoTracking()
                             .Where(x =>
-                                approverIds.Contains(x.EmpId) &&
-                                x.OrgId == claim.OrganizationId &&
-                                x.Status != null &&
-                                x.Status.ToLower() == "active")
+                                uniqueApproverIds.Contains(x.EmpId) &&
+                                x.OrgId == organizationId &&
+                                (x.Status == null ||
+                                 x.Status.Trim().ToUpper() == "ACTIVE"))
                             .Select(x => x.EmpId)
                             .Distinct()
                             .ToListAsync();
 
-                    if (validApproverIds.Count != approverIds.Count)
+                    if (validApproverIds.Count != uniqueApproverIds.Count)
                     {
                         await transaction.RollbackAsync();
 
@@ -5559,130 +5951,108 @@ Local Expense Claim Portal
                         });
                     }
 
-
-                    // Keep approvers grouped by level.
-
-                    approverIdsByLevel[config.ApprovalLevel] = approverIds;
-
-
-                    // Create a ClaimApproval record for each approver.
+                    // Create approval records for this selected department.
 
                     foreach (var approverId in approverIds)
                     {
-                        _context.ClaimApprovals.Add(
+                        claimApprovalRecords.Add(
                             new ClaimApproval
                             {
                                 ClaimId = claim.ClaimId,
 
+                                // IMPORTANT:
+                                // Save the department configuration ID.
+                                DepartmentApprovalConfigId =
+                                    departmentConfig.Id,
+
                                 ApprovalLevel = config.ApprovalLevel,
-
                                 ApproverEmpId = approverId,
-
                                 Status = "Pending",
-
                                 CreatedAt = DateTime.Now,
-
                                 ApprovalToken = Guid.NewGuid()
                             });
                     }
                 }
 
-                // =====================================
-                // 10. SAVE ALL APPROVAL RECORDS
-                // =====================================
-
-                await _context.SaveChangesAsync();
-
-                // =====================================
-                // 11. GET PENDING APPROVAL RECORDS
-                // =====================================
-
-                var approvalRecords =
-                    await _context.ClaimApprovals
-                        .Where(x =>
-                            x.ClaimId == claim.ClaimId &&
-                            x.Status == "Pending")
-                        .OrderBy(x => x.ApprovalLevel)
-                        .ThenBy(x => x.ApproverEmpId)
-                        .ToListAsync();
-
-                // =====================================
-                // 12. SAFETY CHECK
-                // =====================================
-
-                if (!approvalRecords.Any())
+                if (!claimApprovalRecords.Any())
                 {
                     await transaction.RollbackAsync();
 
                     return BadRequest(new
                     {
                         success = false,
-                        message =
-                            "Approval flow could not be created."
+                        message = "Approval flow could not be created."
                     });
                 }
 
                 // =====================================
-                // 13. FIRST APPROVAL LEVEL
+                // 12. REMOVE OLD APPROVAL RECORDS
+                //    ONLY AFTER VALIDATING NEW FLOW
+                // =====================================
+
+                var oldApprovals = await _context.ClaimApprovals
+                    .Where(x => x.ClaimId == claim.ClaimId)
+                    .ToListAsync();
+
+                if (oldApprovals.Any())
+                {
+                    _context.ClaimApprovals.RemoveRange(oldApprovals);
+                }
+
+                // =====================================
+                // 13. ADD NEW APPROVAL RECORDS
+                // =====================================
+
+                await _context.ClaimApprovals.AddRangeAsync(
+                    claimApprovalRecords);
+
+                // =====================================
+                // 14. UPDATE CLAIM STATUS
                 // =====================================
 
                 int firstApprovalLevel =
-                    approvalRecords.Min(
-                        x => x.ApprovalLevel);
-
-                claim.CurrentApprovalLevel =
-                    firstApprovalLevel;
+                    claimApprovalRecords.Min(x => x.ApprovalLevel);
 
                 claim.Status = "Pending";
+                claim.CurrentApprovalLevel = firstApprovalLevel;
+                claim.SubmittedAt = DateTime.Now;
+                claim.RejectedAt = null;
+                claim.ApprovedAt = null;
+                claim.LastModifiedAt = DateTime.Now;
 
-                claim.LastModifiedAt =
-                    DateTime.Now;
+                // Keep claim.DepartmentId unchanged:
+                // it contains the department selected when creating the claim.
 
                 await _context.SaveChangesAsync();
 
                 // =====================================
-                // 14. DEPARTMENT NAME
+                // 15. GET FIRST-LEVEL APPROVAL RECORDS
                 // =====================================
 
-                
-string departmentName = employee.Department ?? "-";
-
-              
-
-                // =====================================
-                // 15. PURPOSE
-                // =====================================
-
-                var firstTravel =
-                    await _context.ClaimTravels
-                        .FirstOrDefaultAsync(x =>
-                            x.ClaimId == claim.ClaimId);
-
-                string purpose =
-                    firstTravel?.Purpose ?? "-";
+                var firstLevelApprovals = claimApprovalRecords
+                    .Where(x => x.ApprovalLevel == firstApprovalLevel)
+                    .ToList();
 
                 // =====================================
-                // 16. GET ALL FIRST LEVEL APPROVERS
+                // 16. GET CLAIM PURPOSE
                 // =====================================
 
-                var firstLevelApprovals =
-                    approvalRecords
-                        .Where(x =>
-                            x.ApprovalLevel ==
-                            firstApprovalLevel)
-                        .ToList();
+                var firstTravel = await _context.ClaimTravels
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == claim.ClaimId);
+
+                string purpose = firstTravel?.Purpose ?? "-";
+
+                // =====================================
+                // 17. SEND EMAIL TO FIRST-LEVEL APPROVERS
+                // =====================================
 
                 int emailSentCount = 0;
-
                 int emailFailedCount = 0;
 
-                // =====================================
-                // 17. SEND EMAIL TO ALL FIRST LEVEL
-                // APPROVERS
-                // =====================================
+                var baseUrl = _configuration["AppSettings:BaseUrl"];
 
-                foreach (var firstApproval
-                         in firstLevelApprovals)
+                foreach (var firstApproval in firstLevelApprovals)
                 {
                     if (!firstApproval.ApproverEmpId.HasValue)
                     {
@@ -5690,28 +6060,20 @@ string departmentName = employee.Department ?? "-";
                     }
 
                     var approver =
-                        await _context.EmployeeMasters
+                        await _commonContext.CompanyUsers
+                            .AsNoTracking()
                             .FirstOrDefaultAsync(x =>
-                                x.EmpId ==
-                                    firstApproval.ApproverEmpId.Value &&
-                                x.OrganizationId ==
-                                    claim.OrganizationId &&
-                                x.IsActive);
+                                x.EmpId == firstApproval.ApproverEmpId.Value &&
+                                x.OrgId == organizationId &&
+                                (x.Status == null ||
+                                 x.Status.Trim().ToUpper() == "ACTIVE"));
 
-                    if (approver == null)
+                    if (approver == null ||
+                        string.IsNullOrWhiteSpace(approver.Email))
                     {
+                        emailFailedCount++;
                         continue;
                     }
-
-                    if (string.IsNullOrWhiteSpace(
-                            approver.EmailId))
-                    {
-                        continue;
-                    }
-
-                    var baseUrl =
-                        _configuration[
-                            "AppSettings:BaseUrl"];
 
                     if (string.IsNullOrWhiteSpace(baseUrl))
                     {
@@ -5719,26 +6081,15 @@ string departmentName = employee.Department ?? "-";
                         continue;
                     }
 
-                    // =====================================
-                    // APPROVE URL
-                    // =====================================
-
                     var approveUrl =
-                        $"{baseUrl}/api/TravelMaster/mail-approve?token={firstApproval.ApprovalToken}";
-
-                    // =====================================
-                    // REJECT URL
-                    // =====================================
+                        $"{baseUrl}/api/TravelMaster/mail-approve" +
+                        $"?token={firstApproval.ApprovalToken}";
 
                     var rejectUrl =
-                        $"{baseUrl}/api/TravelMaster/reject-form?token={firstApproval.ApprovalToken}";
-
-                    // =====================================
-                    // EMAIL BODY
-                    // =====================================
+                        $"{baseUrl}/api/TravelMaster/reject-form" +
+                        $"?token={firstApproval.ApprovalToken}";
 
                     string body = $@"
-
 Dear {approver.FullName},
 
 <br/><br/>
@@ -5750,56 +6101,26 @@ A new Local Expense Claim requires your approval.
 <b>Employee Details</b>
 
 <ul>
-
-    <li>
-        Employee Name : {employee.FullName}
-    </li>
-
-    <li>
-        Employee ID : {employee.EmpCode}
-    </li>
-
-    <li>
-        Department : {departmentName}
-    </li>
-
+    <li>Employee Name : {employee.FullName}</li>
+    <li>Employee ID : {employee.EmpCode}</li>
+    <li>Department ID : {selectedDepartmentId}</li>
+    <li>Branch : {branchName}</li>
 </ul>
 
 <b>Claim Details</b>
 
 <ul>
-
-    <li>
-        Claim Number : {claim.ClaimNo}
-    </li>
-
-    <li>
-        Claim Type : Local Expense Claim
-    </li>
-
-    <li>
-        Claim Month : {claim.ClaimMonth:MMM-yyyy}
-    </li>
-
-    <li>
-        Amount : ₹{claim.TotalAmount:N2}
-    </li>
-
-    <li>
-        Status : Pending Approval
-    </li>
-
-    <li>
-        Approval Level : {firstApproval.ApprovalLevel}
-    </li>
-
+    <li>Claim Number : {claim.ClaimNo}</li>
+    <li>Claim Type : Local Expense Claim</li>
+    <li>Claim Month : {claim.ClaimMonth:MMM-yyyy}</li>
+    <li>Amount : ₹{claim.TotalAmount:N2}</li>
+    <li>Status : Pending Approval</li>
+    <li>Approval Level : {firstApproval.ApprovalLevel}</li>
 </ul>
 
 <b>Purpose</b>
 
-<p>
-    {purpose}
-</p>
+<p>{purpose}</p>
 
 <br/>
 
@@ -5809,9 +6130,7 @@ color:white;
 padding:10px 20px;
 text-decoration:none;
 border-radius:5px;'>
-
 Approve
-
 </a>
 
 &nbsp;&nbsp;
@@ -5822,9 +6141,7 @@ color:white;
 padding:10px 20px;
 text-decoration:none;
 border-radius:5px;'>
-
 Reject
-
 </a>
 
 <br/><br/>
@@ -5833,27 +6150,24 @@ Regards,<br/>
 Local Expense Claim Portal
 ";
 
-                    // =====================================
-                    // SEND EMAIL
-                    // =====================================
-
                     try
                     {
                         await _emailService.SendEmailAsync(
-                            approver.EmailId,
+                            approver.Email,
                             $"Claim Approval Required - {claim.ClaimNo}",
                             body);
 
                         emailSentCount++;
                     }
-                    catch
+                    catch (Exception)
                     {
+                        // Email failure should not undo a valid submission.
                         emailFailedCount++;
                     }
                 }
 
                 // =====================================
-                // 18. COMMIT
+                // 18. COMMIT TRANSACTION
                 // =====================================
 
                 await transaction.CommitAsync();
@@ -5872,49 +6186,36 @@ Local Expense Claim Portal
 
                     data = new
                     {
-                        claimId =
-                            claim.ClaimId,
-
-                        claimNo =
-                            claim.ClaimNo,
-
-                        status =
-                            claim.Status,
-
-                        currentApprovalLevel =
-                            claim.CurrentApprovalLevel,
-
-                        submittedAt =
-                            claim.SubmittedAt,
-
-                        firstApprovalLevel =
-                            firstApprovalLevel,
-
-                        firstLevelApproverCount =
-                            firstLevelApprovals.Count,
-
-                        emailSentCount =
-                            emailSentCount,
-
-                        emailFailedCount =
-                            emailFailedCount
+                        claimId = claim.ClaimId,
+                        claimNo = claim.ClaimNo,
+                        departmentId = claim.DepartmentId,
+                        departmentApprovalConfigId = departmentConfig.Id,
+                        status = claim.Status,
+                        currentApprovalLevel = claim.CurrentApprovalLevel,
+                        submittedAt = claim.SubmittedAt,
+                        firstApprovalLevel = firstApprovalLevel,
+                        firstLevelApproverCount = firstLevelApprovals.Count,
+                        emailSentCount = emailSentCount,
+                        emailFailedCount = emailFailedCount
                     }
                 });
             }
             catch (Exception ex)
             {
-                await transaction.RollbackAsync();
+                try
+                {
+                    await transaction.RollbackAsync();
+                }
+                catch (Exception)
+                {
+                    // Preserve the original exception.
+                }
 
                 return StatusCode(500, new
                 {
                     success = false,
-
-                    message =
-                        "Error while submitting claim.",
-
-                    error =
-                        ex.InnerException?.Message
-                        ?? ex.Message
+                    message = "Error while submitting claim.",
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
@@ -6365,260 +6666,11 @@ Local Expense Claim Portal
 
 
         //------------APPROVAL FOR CLAIM----------------//
-        //[Authorize]
-        //        [HttpPost("approve-claim")]
-        //        public async Task<IActionResult> ApproveClaim(
-        //      [FromBody] ClaimApprovalActionDto dto)
-        //        {
-        //            try
-        //            {
-        //                var empIdClaim = User.FindFirst("EmpId")?.Value;
-
-        //                if (string.IsNullOrEmpty(empIdClaim))
-        //                {
-        //                    return Unauthorized(new
-        //                    {
-        //                        success = false,
-        //                        message = "EmployeeId not found in token."
-        //                    });
-        //                }
-
-        //                int empId = int.Parse(empIdClaim);
-
-        //                // =====================================
-        //                // Current Pending Approval
-        //                // =====================================
-
-        //                var approval = await _context.ClaimApprovals
-        //                    .FirstOrDefaultAsync(x =>
-        //                        x.ClaimId == dto.ClaimId &&
-        //                        x.ApproverEmpId == empId &&
-        //                        x.Status == "Pending");
-
-        //                if (approval == null)
-        //                {
-        //                    return BadRequest(new
-        //                    {
-        //                        success = false,
-        //                        message = "Approval record not found."
-        //                    });
-        //                }
-
-        //                // =====================================
-        //                // Update Current Approval
-        //                // =====================================
-
-        //                approval.Status = "Approved";
-        //                approval.Remarks = dto.Remarks;
-        //                approval.ActionDate = DateTime.Now;
-
-        //                await _context.SaveChangesAsync();
-
-        //                // =====================================
-        //                // Get Claim
-        //                // =====================================
-
-        //                var claim = await _context.ClaimMasters
-        //                    .FirstOrDefaultAsync(x => x.ClaimId == dto.ClaimId);
-
-        //                if (claim == null)
-        //                {
-        //                    return BadRequest(new
-        //                    {
-        //                        success = false,
-        //                        message = "Claim not found."
-        //                    });
-        //                }
-
-        //                ClaimApproval? nextPending = null;
-
-        //                // =====================================
-        //                // COMPANY FLOW
-        //                // Level 2 = Final Manual Approval
-        //                // =====================================
-
-        //                if (approval.ApprovalLevel == 2)
-        //                {
-        //                    claim.Status = "Approved";
-        //                    claim.ApprovedAt = DateTime.Now;
-        //                    claim.CurrentApprovalLevel = null;
-        //                    claim.LastModifiedAt = DateTime.Now;
-
-        //                    // Auto Approve Remaining Levels
-
-        //                    var remainingApprovals = await _context.ClaimApprovals
-        //                        .Where(x =>
-        //                            x.ClaimId == dto.ClaimId &&
-        //                            x.Status == "Pending")
-        //                        .ToListAsync();
-
-        //                    foreach (var item in remainingApprovals)
-        //                    {
-        //                        item.Status = "Approved";
-        //                        item.Remarks = "Auto Approved";
-        //                        item.ActionDate = DateTime.Now;
-        //                    }
-        //                }
-        //                else
-        //                {
-        //                    // Move To Next Approval
-
-        //                    nextPending = await _context.ClaimApprovals
-        //                        .Where(x =>
-        //                            x.ClaimId == dto.ClaimId &&
-        //                            x.Status == "Pending")
-        //                        .OrderBy(x => x.ApprovalLevel)
-        //                        .FirstOrDefaultAsync();
-
-        //                    if (nextPending != null)
-        //                    {
-        //                        claim.CurrentApprovalLevel = nextPending.ApprovalLevel;
-        //                        claim.LastModifiedAt = DateTime.Now;
-        //                    }
-        //                    else
-        //                    {
-        //                        claim.Status = "Approved";
-        //                        claim.ApprovedAt = DateTime.Now;
-        //                        claim.CurrentApprovalLevel = null;
-        //                        claim.LastModifiedAt = DateTime.Now;
-        //                    }
-        //                }
-
-        //                await _context.SaveChangesAsync();
-        //                // =====================================
-        //                // SEND MAIL TO NEXT APPROVER
-        //                // =====================================
-
-        //                if (nextPending != null)
-        //                {
-        //                    var nextApprover = await _context.EmployeeMasters
-        //                        .FirstOrDefaultAsync(x => x.EmpId == nextPending.ApproverEmpId);
-
-        //                    var employee = await _context.EmployeeMasters
-        //                        .FirstOrDefaultAsync(x => x.EmpId == claim.EmployeeId);
-
-        //                    string departmentName = "-";
-
-        //                    if (employee?.DepartmentId != null)
-        //                    {
-        //                        var department = await _context.Department_Master
-        //                            .FirstOrDefaultAsync(x => x.DepartmentId == employee.DepartmentId.Value);
-
-        //                        if (department != null)
-        //                        {
-        //                            departmentName = department.DepartmentName;
-        //                        }
-        //                    }
-
-        //                    var firstTravel = await _context.ClaimTravels
-        //                        .FirstOrDefaultAsync(x => x.ClaimId == claim.ClaimId);
-
-        //                    string purpose = firstTravel?.Purpose ?? "-";
-
-        //                    if (nextApprover != null &&
-        //                        !string.IsNullOrWhiteSpace(nextApprover.EmailId))
-        //                    {
-        //                        var baseUrl = _configuration["AppSettings:BaseUrl"];
-
-        //                        var approveUrl =
-        //                            $"{baseUrl}/api/TravelMaster/mail-approve?token={nextPending.ApprovalToken}";
-
-        //                        var rejectUrl =
-        //                            $"{baseUrl}/api/TravelMaster/reject-form?token={nextPending.ApprovalToken}";
-        //                        string body = $@"
-
-        //Dear {nextApprover.FullName},
-
-        //<br/><br/>
-
-        //A new Local expense claim requires your approval.
-
-        //<br/><br/>
-
-        //<b>Employee Details</b>
-
-        //<ul>
-        //    <li>Employee Name : {employee.FullName}</li>
-        //    <li>Employee ID : {employee.EmployeeCode}</li>
-        //    <li>Department : {departmentName}</li>
-        //</ul>
-
-        //<b>Claim Details</b>
-
-        //<ul>
-        //    <li>Claim Number : {claim.ClaimNo}</li>
-        //    <li>Claim Type : Local Expense Claim</li>
-        //    <li>Claim Month : {claim.ClaimMonth:MMM-yyyy}</li>
-        //    <li>Amount : ₹{claim.TotalAmount:N2}</li>
-        //    <li>Status : Pending Approval</li>
-        //</ul>
-
-        //<b>Purpose</b>
-
-        //<p>{purpose}</p>
-
-        //<br/>
-
-        //<a href='{approveUrl}'
-        //style='background:green;
-        //color:white;
-        //padding:10px 20px;
-        //text-decoration:none;
-        //border-radius:5px;'>
-
-        //Approve
-
-        //</a>
-
-        //&nbsp;&nbsp;
-
-        //<a href='{rejectUrl}'
-        //style='background:red;
-        //color:white;
-        //padding:10px 20px;
-        //text-decoration:none;
-        //border-radius:5px;'>
-
-        //Reject
-
-        //</a>
-
-        //<br/><br/>
-
-        //Regards,<br/>
-        //Local Expense Claim Portal
-        //";
-
-        //                        await _emailService.SendEmailAsync(
-        //                            nextApprover.EmailId,
-        //                            $"Claim Approval Required - {claim.ClaimNo}",
-        //                            body);
-        //                    }
-        //                }
-
-        //                    return Ok(new
-        //                    {
-        //                        success = true,
-        //                        message = "Claim approved successfully."
-        //                    });
-        //                }
-
-        //            catch (Exception ex)
-        //            {
-        //                return StatusCode(500, new
-        //                {
-        //                    success = false,
-        //                    message = "Error while approving claim.",
-        //                    error = ex.InnerException?.Message ?? ex.Message
-        //                });
-        //            }
-        //        }
-
 
         [Authorize]
         [HttpPost("approve-claim")]
         public async Task<IActionResult> ApproveClaim(
-      [FromBody] ClaimApprovalActionDto dto)
+          [FromBody] ClaimApprovalActionDto dto)
         {
             await using var transaction =
                 await _context.Database.BeginTransactionAsync();
@@ -6629,12 +6681,14 @@ Local Expense Claim Portal
                 // 1. VALIDATE REQUEST
                 // ==========================================
 
-                if (dto == null)
+                if (dto == null || dto.ClaimId <= 0)
                 {
+                    await transaction.RollbackAsync();
+
                     return BadRequest(new
                     {
                         success = false,
-                        message = "Approval request is required."
+                        message = "Valid approval request and ClaimId are required."
                     });
                 }
 
@@ -6642,53 +6696,36 @@ Local Expense Claim Portal
                 // 2. GET EMPLOYEE ID FROM JWT
                 // ==========================================
 
-                var empIdClaim =
-                    User.FindFirst("EmpId")?.Value;
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
 
-                if (string.IsNullOrWhiteSpace(empIdClaim))
+                if (!int.TryParse(empIdClaim, out int empId) || empId <= 0)
                 {
+                    await transaction.RollbackAsync();
+
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "EmpId not found in token."
-                    });
-                }
-
-                if (!int.TryParse(empIdClaim, out int empId) ||
-                    empId <= 0)
-                {
-                    return Unauthorized(new
-                    {
-                        success = false,
-                        message = "Invalid EmpId in token."
+                        message = "Invalid or missing EmpId in token."
                     });
                 }
 
                 // ==========================================
                 // 3. GET ORGANIZATION ID FROM JWT
-                // IMPORTANT: Org_Id
                 // ==========================================
 
-                var orgIdClaim = User.FindFirst("orgId")?.Value;
+                var orgIdClaim =
+                    User.FindFirst("orgId")?.Value ??
+                    User.FindFirst("OrganizationId")?.Value;
 
-                if (string.IsNullOrWhiteSpace(orgIdClaim))
-                {
-                    return Unauthorized(new
-                    {
-                        success = false,
-                        message = "Org_Id not found in token."
-                    });
-                }
-
-                if (!int.TryParse(
-                        orgIdClaim,
-                        out int organizationId) ||
+                if (!int.TryParse(orgIdClaim, out int organizationId) ||
                     organizationId <= 0)
                 {
+                    await transaction.RollbackAsync();
+
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "Invalid Org_Id in token."
+                        message = "Invalid or missing organization ID in token."
                     });
                 }
 
@@ -6696,12 +6733,11 @@ Local Expense Claim Portal
                 // 4. GET CLAIM
                 // ==========================================
 
-                var claim =
-                    await _context.ClaimMasters
-                        .FirstOrDefaultAsync(x =>
-                            x.ClaimId == dto.ClaimId &&
-                            x.OrganizationId == organizationId &&
-                            x.IsActive);
+                var claim = await _context.ClaimMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == dto.ClaimId &&
+                        x.OrganizationId == organizationId &&
+                        x.IsActive);
 
                 if (claim == null)
                 {
@@ -6718,7 +6754,8 @@ Local Expense Claim Portal
                 // 5. CLAIM MUST BE PENDING
                 // ==========================================
 
-                if (!claim.Status.Equals(
+                if (!string.Equals(
+                        claim.Status,
                         "Pending",
                         StringComparison.OrdinalIgnoreCase))
                 {
@@ -6736,14 +6773,13 @@ Local Expense Claim Portal
                 // 6. VALIDATE APPROVER EMPLOYEE
                 // ==========================================
 
-                var approverEmployee =
-                    await _commonContext.CompanyUsers
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(x =>
-                            x.EmpId == empId &&
-                            x.OrgId == organizationId &&
-                            x.Status != null &&
-                            x.Status.ToLower() == "active");
+                var approverEmployee = await _commonContext.CompanyUsers
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.EmpId == empId &&
+                        x.OrgId == organizationId &&
+                        (x.Status == null ||
+                         x.Status.Trim().ToUpper() == "ACTIVE"));
 
                 if (approverEmployee == null)
                 {
@@ -6756,16 +6792,16 @@ Local Expense Claim Portal
                             "Approver employee not found in the current organization."
                     });
                 }
+
                 // ==========================================
-                // 7. GET THIS APPROVER'S PENDING RECORD
+                // 7. GET APPROVER'S PENDING RECORD
                 // ==========================================
 
-                var approval =
-                    await _context.ClaimApprovals
-                        .FirstOrDefaultAsync(x =>
-                            x.ClaimId == dto.ClaimId &&
-                            x.ApproverEmpId == empId &&
-                            x.Status == "Pending");
+                var approval = await _context.ClaimApprovals
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == dto.ClaimId &&
+                        x.ApproverEmpId == empId &&
+                        x.Status == "Pending");
 
                 if (approval == null)
                 {
@@ -6783,35 +6819,29 @@ Local Expense Claim Portal
                 // 8. VERIFY CURRENT ACTIVE LEVEL
                 // ==========================================
 
-                if (claim.CurrentApprovalLevel.HasValue &&
-                    claim.CurrentApprovalLevel.Value !=
-                    approval.ApprovalLevel)
+                if (!claim.CurrentApprovalLevel.HasValue ||
+                    claim.CurrentApprovalLevel.Value != approval.ApprovalLevel)
                 {
                     await transaction.RollbackAsync();
 
                     return BadRequest(new
                     {
                         success = false,
-                        message =
-                            "This approval level is not currently active."
+                        message = "This approval level is not currently active."
                     });
                 }
 
                 // ==========================================
-                // 9. GET CLAIM EMPLOYEE AND APPROVAL CONFIG
+                // 9. GET CLAIM EMPLOYEE
                 // ==========================================
 
-                // Get the employee who submitted the claim
-                // from the Common Login database.
-
-                var claimEmployee =
-                    await _commonContext.CompanyUsers
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(x =>
-                            x.EmpId == claim.EmployeeId &&
-                            x.OrgId == organizationId &&
-                            x.Status != null &&
-                            x.Status.ToLower() == "active");
+                var claimEmployee = await _commonContext.CompanyUsers
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.EmpId == claim.EmployeeId &&
+                        x.OrgId == organizationId &&
+                        (x.Status == null ||
+                         x.Status.Trim().ToUpper() == "ACTIVE"));
 
                 if (claimEmployee == null)
                 {
@@ -6824,20 +6854,118 @@ Local Expense Claim Portal
                     });
                 }
 
-                //if (string.IsNullOrWhiteSpace(claimEmployee.Branch) ||
-                    //string.IsNullOrWhiteSpace(claimEmployee.Department))
+                // ==========================================
+                // 9A. VALIDATE EMPLOYEE BRANCH AND DEPARTMENT
+                // CompanyUsers.DepartmentId is a CSV string (example: "21,15").
+                // ClaimMaster.DepartmentId is the single department selected for this claim (int?).
+                // ==========================================
+
+                if (!claimEmployee.BranchId.HasValue ||
+                    claimEmployee.BranchId.Value <= 0 ||
+                    string.IsNullOrWhiteSpace(claimEmployee.DepartmentId))
                 {
                     await transaction.RollbackAsync();
 
                     return BadRequest(new
                     {
                         success = false,
-                        message = "Employee branch or department is missing."
+                        message = "Employee BranchId or DepartmentId is missing."
                     });
                 }
 
+                int employeeBranchId = claimEmployee.BranchId.Value;
 
-                // Get department approval configuration.
+                var employeeDepartmentIds = claimEmployee.DepartmentId
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(value => int.TryParse(value.Trim(), out int id) ? id : 0)
+                    .Where(id => id > 0)
+                    .Distinct()
+                    .ToList();
+
+                if (employeeDepartmentIds.Count == 0)
+                {
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Employee DepartmentId is invalid."
+                    });
+                }
+
+                if (!claim.DepartmentId.HasValue ||
+                    claim.DepartmentId.Value <= 0 ||
+                    !employeeDepartmentIds.Contains(claim.DepartmentId.Value))
+                {
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Selected claim department does not belong to this employee.",
+                        employeeDepartmentIds,
+                        claimDepartmentId = claim.DepartmentId
+                    });
+                }
+
+                int employeeDepartmentId = claim.DepartmentId.Value;
+
+                // ==========================================
+                // 9B. GET BRANCH
+                // ==========================================
+
+                var branch = await _commonContext.Branches
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.BranchId == employeeBranchId &&
+                        x.OrgId == organizationId);
+
+                if (branch == null ||
+                    string.IsNullOrWhiteSpace(branch.BranchName))
+                {
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "Employee branch was not found for this organization."
+                    });
+                }
+
+                string branchName = branch.BranchName.Trim();
+
+                // ==========================================
+                // 9C. GET DEPARTMENT FROM DEPARTMENT MASTER
+                // DepartmentId is the identifier.
+                // ==========================================
+
+                var department = await _commonContext.Departments
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.Id == employeeDepartmentId &&
+                        x.OrgId == organizationId &&
+                        x.BranchId == employeeBranchId);
+
+                if (department == null)
+                {
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "Employee DepartmentId does not belong to this organization and branch."
+                    });
+                }
+
+                int departmentId = department.Id;
+                string departmentName = department.DepartmentName;
+
+                // ==========================================
+                // 9D. GET DEPARTMENT APPROVAL CONFIG
+                // Organization + Module + Branch + DepartmentId
+                // ==========================================
 
                 const string moduleCode = "travel_portal";
 
@@ -6846,8 +6974,8 @@ Local Expense Claim Portal
                         .FirstOrDefaultAsync(x =>
                             x.OrganizationId == organizationId &&
                             x.ModuleCode == moduleCode &&
-                            //x.Branch == claimEmployee.Branch!.Trim() &&
-                            x.Department == claimEmployee.Department!.Trim() &&
+                            x.Branch == branchName &&
+                            x.DepartmentId == departmentId &&
                             x.IsActive);
 
                 if (departmentConfig == null)
@@ -6858,21 +6986,80 @@ Local Expense Claim Portal
                     {
                         success = false,
                         message =
-                            "Department approval configuration not found."
+                            "Department approval configuration not found. Configure approval levels for this DepartmentId first.",
+                        departmentId
                     });
                 }
 
+                // Ensure this pending approval belongs to this department's configuration.
+                if (approval.DepartmentApprovalConfigId.HasValue &&
+                    approval.DepartmentApprovalConfigId.Value != departmentConfig.Id)
+                {
+                    await transaction.RollbackAsync();
 
-                // Get the configuration for the current approval level.
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Approval record does not belong to this department configuration."
+                    });
+                }
 
-                var currentConfig =
+                // ==========================================
+                // 9E. GET EMPLOYEE APPROVAL CONFIGURATION
+                // ==========================================
+
+                var approvalConfigs =
                     await _context.EmployeeApprovalConfigs
-                        .FirstOrDefaultAsync(x =>
+                        .AsNoTracking()
+                        .Where(x =>
                             x.OrganizationId == organizationId &&
                             x.DepartmentApprovalConfigId == departmentConfig.Id &&
                             x.EmployeeId == claim.EmployeeId &&
-                            x.ApprovalLevel == approval.ApprovalLevel &&
-                            x.IsActive);
+                            x.IsActive)
+                        .OrderBy(x => x.ApprovalLevel)
+                        .ToListAsync();
+
+                // ==========================================
+                // 9F. VALIDATE CONFIGURED APPROVAL LEVELS
+                // ==========================================
+
+                if (approvalConfigs.Count != departmentConfig.TotalApprovalLevels)
+                {
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "Employee approval configuration is incomplete.",
+                        departmentId,
+                        expectedApprovalLevels = departmentConfig.TotalApprovalLevels,
+                        actualApprovalLevels = approvalConfigs.Count
+                    });
+                }
+
+                for (int i = 0; i < approvalConfigs.Count; i++)
+                {
+                    if (approvalConfigs[i].ApprovalLevel != i + 1)
+                    {
+                        await transaction.RollbackAsync();
+
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message =
+                                "Approval levels must start from Level 1 and continue sequentially."
+                        });
+                    }
+                }
+
+                // ==========================================
+                // 10. GET CURRENT LEVEL CONFIGURATION
+                // ==========================================
+
+                var currentConfig = approvalConfigs
+                    .FirstOrDefault(x =>
+                        x.ApprovalLevel == approval.ApprovalLevel);
 
                 if (currentConfig == null)
                 {
@@ -6886,12 +7073,7 @@ Local Expense Claim Portal
                     });
                 }
 
-                // ==========================================
-                // 10. APPROVAL RULE - ANYONE ONLY
-                // ==========================================
-
-                string approvalMode =
-                    currentConfig.ApprovalRule?.Trim() ?? "";
+                string approvalMode = currentConfig.ApprovalRule?.Trim() ?? "";
 
                 if (!approvalMode.Equals(
                         "AnyOne",
@@ -6923,218 +7105,97 @@ Local Expense Claim Portal
                 await _context.SaveChangesAsync();
 
                 // ==========================================
-                // 12. CHECK CURRENT LEVEL
+                // 12. ANYONE MODE
                 // ==========================================
 
-                bool currentLevelCompleted = false;
+                var sameLevelPending = await _context.ClaimApprovals
+                    .Where(x =>
+                        x.ClaimId == claim.ClaimId &&
+                        x.ApprovalLevel == approval.ApprovalLevel &&
+                        x.Status == "Pending")
+                    .ToListAsync();
 
-                // ==========================================
-                // 13. ANYONE MODE
-                // ==========================================
-
-                if (approvalMode.Equals(
-                        "AnyOne",
-                        StringComparison.OrdinalIgnoreCase))
+                foreach (var item in sameLevelPending)
                 {
-                    currentLevelCompleted = true;
-
-                    var sameLevelPending =
-                        await _context.ClaimApprovals
-                            .Where(x =>
-                                x.ClaimId == claim.ClaimId &&
-                                x.ApprovalLevel ==
-                                    approval.ApprovalLevel &&
-                                x.Status == "Pending")
-                            .ToListAsync();
-
-                    foreach (var item in sameLevelPending)
-                    {
-                        item.Status = "Skipped";
-
-                        item.Remarks =
-                            "Skipped because another approver approved this level.";
-
-                        item.ActionDate = DateTime.Now;
-                    }
-
-                    if (sameLevelPending.Any())
-                    {
-                        await _context.SaveChangesAsync();
-                    }
+                    item.Status = "Skipped";
+                    item.Remarks =
+                        "Skipped because another approver approved this level.";
+                    item.ActionDate = DateTime.Now;
                 }
 
-                // ==========================================
-                // 14. ALL MODE
-                // ==========================================
-
-                else if (approvalMode.Equals(
-                             "All",
-                             StringComparison.OrdinalIgnoreCase))
+                if (sameLevelPending.Count > 0)
                 {
-                    var sameLevelPending =
-                        await _context.ClaimApprovals
-                            .Where(x =>
-                                x.ClaimId == claim.ClaimId &&
-                                x.ApprovalLevel ==
-                                    approval.ApprovalLevel &&
-                                x.Status == "Pending")
-                            .ToListAsync();
-
-                    if (!sameLevelPending.Any())
-                    {
-                        currentLevelCompleted = true;
-                    }
-                    else
-                    {
-                        currentLevelCompleted = false;
-                    }
-                }
-
-                // ==========================================
-                // 15. SEQUENTIAL MODE
-                // ==========================================
-
-                else
-                {
-                    currentLevelCompleted = true;
-                }
-
-                // ==========================================
-                // 16. CURRENT LEVEL NOT COMPLETE
-                // MAINLY FOR ALL MODE
-                // ==========================================
-
-                if (!currentLevelCompleted)
-                {
-                    claim.CurrentApprovalLevel =
-                        approval.ApprovalLevel;
-
-                    claim.LastModifiedAt =
-                        DateTime.Now;
-
                     await _context.SaveChangesAsync();
-
-                    await transaction.CommitAsync();
-
-                    return Ok(new
-                    {
-                        success = true,
-                        message =
-                            "Approval recorded. Waiting for remaining approvers.",
-                        data = new
-                        {
-                            claimId = claim.ClaimId,
-                            claimNo = claim.ClaimNo,
-                            approvalLevel =
-                                approval.ApprovalLevel,
-                            claimStatus =
-                                claim.Status,
-                            currentApprovalLevel =
-                                claim.CurrentApprovalLevel
-                        }
-                    });
                 }
 
                 // ==========================================
-                // 17. FIND NEXT APPROVAL LEVEL
+                // 13. FIND NEXT APPROVAL LEVEL
                 // ==========================================
 
-                var nextLevel =
-                    await _context.ClaimApprovals
-                        .Where(x =>
-                            x.ClaimId == claim.ClaimId &&
-                            x.Status == "Pending" &&
-                            x.ApprovalLevel >
-                                approval.ApprovalLevel)
-                        .Select(x => (int?)x.ApprovalLevel)
-                        .MinAsync();
+                var nextLevel = await _context.ClaimApprovals
+                    .Where(x =>
+                        x.ClaimId == claim.ClaimId &&
+                        x.Status == "Pending" &&
+                        x.ApprovalLevel > approval.ApprovalLevel)
+                    .Select(x => (int?)x.ApprovalLevel)
+                    .MinAsync();
 
                 // ==========================================
-                // 18. NO NEXT LEVEL
-                // FINAL APPROVAL
+                // 14. NO NEXT LEVEL - FINAL APPROVAL
                 // ==========================================
 
                 if (!nextLevel.HasValue)
                 {
-                    // There should not normally be pending records
-                    // after the last completed level.
-                    // Mark any unexpected pending records as skipped.
-
-                    var remainingApprovals =
-                        await _context.ClaimApprovals
-                            .Where(x =>
-                                x.ClaimId == claim.ClaimId &&
-                                x.Status == "Pending")
-                            .ToListAsync();
+                    var remainingApprovals = await _context.ClaimApprovals
+                        .Where(x =>
+                            x.ClaimId == claim.ClaimId &&
+                            x.Status == "Pending")
+                        .ToListAsync();
 
                     foreach (var item in remainingApprovals)
                     {
                         item.Status = "Skipped";
-
-                        item.Remarks =
-                            "Skipped after final approval.";
-
+                        item.Remarks = "Skipped after final approval.";
                         item.ActionDate = DateTime.Now;
                     }
 
-                    // ======================================
-                    // FINAL CLAIM APPROVAL
-                    // ======================================
-
                     claim.Status = "Approved";
-
-                    claim.ApprovedAt =
-                        DateTime.Now;
-
-                    claim.CurrentApprovalLevel =
-                        null;
-
-                    claim.LastModifiedAt =
-                        DateTime.Now;
+                    claim.ApprovedAt = DateTime.Now;
+                    claim.CurrentApprovalLevel = null;
+                    claim.LastModifiedAt = DateTime.Now;
 
                     await _context.SaveChangesAsync();
-
                     await transaction.CommitAsync();
 
                     return Ok(new
                     {
                         success = true,
-                        message =
-                            "Claim approved successfully.",
+                        message = "Claim approved successfully.",
                         data = new
                         {
-                            claimId =
-                                claim.ClaimId,
-
-                            claimNo =
-                                claim.ClaimNo,
-
-                            status =
-                                claim.Status,
-
-                            approvedAt =
-                                claim.ApprovedAt
+                            claimId = claim.ClaimId,
+                            claimNo = claim.ClaimNo,
+                            departmentId,
+                            status = claim.Status,
+                            approvedAt = claim.ApprovedAt
                         }
                     });
                 }
 
                 // ==========================================
-                // 19. GET ALL APPROVERS
-                // FOR NEXT LEVEL
+                // 15. GET NEXT LEVEL APPROVERS
                 // ==========================================
 
-                var nextLevelApprovals =
-                    await _context.ClaimApprovals
-                        .Where(x =>
-                            x.ClaimId == claim.ClaimId &&
-                            x.ApprovalLevel ==
-                                nextLevel.Value &&
-                            x.Status == "Pending" &&
-                            x.ApproverEmpId.HasValue)
-                        .OrderBy(x => x.ApproverEmpId)
-                        .ToListAsync();
+                var nextLevelApprovals = await _context.ClaimApprovals
+                    .Where(x =>
+                        x.ClaimId == claim.ClaimId &&
+                        x.ApprovalLevel == nextLevel.Value &&
+                        x.Status == "Pending" &&
+                        x.ApproverEmpId.HasValue)
+                    .OrderBy(x => x.ApproverEmpId)
+                    .ToListAsync();
 
-                if (!nextLevelApprovals.Any())
+                if (nextLevelApprovals.Count == 0)
                 {
                     await transaction.RollbackAsync();
 
@@ -7147,47 +7208,32 @@ Local Expense Claim Portal
                 }
 
                 // ==========================================
-                // 20. MOVE CLAIM TO NEXT LEVEL
+                // 16. MOVE CLAIM TO NEXT LEVEL
                 // ==========================================
 
-                claim.CurrentApprovalLevel =
-                    nextLevel.Value;
-
-                claim.LastModifiedAt =
-                    DateTime.Now;
+                claim.CurrentApprovalLevel = nextLevel.Value;
+                claim.LastModifiedAt = DateTime.Now;
 
                 await _context.SaveChangesAsync();
 
                 // ==========================================
-                // 21. GET CLAIM EMPLOYEE
-                // ==========================================
-                // ==========================================
-                // 2. DEPARTMENT NAME
+                // 17. GET CLAIM PURPOSE
                 // ==========================================
 
-                string departmentName = claimEmployee.Department ?? "-";
+                var firstTravel = await _context.ClaimTravels
+                    .FirstOrDefaultAsync(x =>
+                        x.ClaimId == claim.ClaimId);
+
+                string purpose = firstTravel?.Purpose ?? "-";
 
                 // ==========================================
-                // 23. PURPOSE
-                // ==========================================
-
-                var firstTravel =
-                    await _context.ClaimTravels
-                        .FirstOrDefaultAsync(x =>
-                            x.ClaimId == claim.ClaimId);
-
-                string purpose =
-                    firstTravel?.Purpose ?? "-";
-
-                // ==========================================
-                // 24. SEND EMAIL TO ALL NEXT LEVEL APPROVERS
+                // 18. EMAIL CONFIGURATION
                 // ==========================================
 
                 int emailSentCount = 0;
                 int emailFailedCount = 0;
 
-                var baseUrl =
-                    _configuration["AppSettings:BaseUrl"];
+                var baseUrl = _configuration["AppSettings:BaseUrl"];
 
                 if (string.IsNullOrWhiteSpace(baseUrl))
                 {
@@ -7196,30 +7242,31 @@ Local Expense Claim Portal
                     return BadRequest(new
                     {
                         success = false,
-                        message =
-                            "AppSettings:BaseUrl is not configured."
+                        message = "AppSettings:BaseUrl is not configured."
                     });
                 }
 
-                foreach (var nextApproval
-                         in nextLevelApprovals)
-                {
-                    var nextApprover =
-     await _commonContext.CompanyUsers
-         .AsNoTracking()
-         .FirstOrDefaultAsync(x =>
-             x.EmpId == nextApproval.ApproverEmpId.Value &&
-             x.OrgId == organizationId &&
-             x.Status != null &&
-             x.Status.ToLower() == "active");
+                // ==========================================
+                // 19. SEND EMAIL TO NEXT LEVEL APPROVERS
+                // ==========================================
 
-                    if (nextApprover == null)
+                foreach (var nextApproval in nextLevelApprovals)
+                {
+                    if (!nextApproval.ApproverEmpId.HasValue)
                     {
-                        emailFailedCount++;
                         continue;
                     }
 
-                    if (string.IsNullOrWhiteSpace(nextApprover.Email))
+                    var nextApprover = await _commonContext.CompanyUsers
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(x =>
+                            x.EmpId == nextApproval.ApproverEmpId.Value &&
+                            x.OrgId == organizationId &&
+                            (x.Status == null ||
+                             x.Status.Trim().ToUpper() == "ACTIVE"));
+
+                    if (nextApprover == null ||
+                        string.IsNullOrWhiteSpace(nextApprover.Email))
                     {
                         emailFailedCount++;
                         continue;
@@ -7232,7 +7279,6 @@ Local Expense Claim Portal
                         $"{baseUrl}/api/TravelMaster/reject-form?token={nextApproval.ApprovalToken}";
 
                     string body = $@"
-
 Dear {nextApprover.FullName},
 
 <br/><br/>
@@ -7244,77 +7290,42 @@ A Local Expense Claim requires your approval.
 <b>Employee Details</b>
 
 <ul>
-    <li>
-        Employee Name : {claimEmployee.FullName}
-    </li>
-
-    <li>
-        Employee ID : {claimEmployee.EmpCode}
-    </li>
-
-    <li>
-        Department : {departmentName}
-    </li>
+    <li>Employee Name : {claimEmployee.FullName}</li>
+    <li>Employee ID : {claimEmployee.EmpCode}</li>
+    <li>Department : {departmentName}</li>
+    <li>Department ID : {departmentId}</li>
+    <li>Branch : {branchName}</li>
 </ul>
 
 <b>Claim Details</b>
 
 <ul>
-    <li>
-        Claim Number : {claim.ClaimNo}
-    </li>
-
-    <li>
-        Claim Type : Local Expense Claim
-    </li>
-
-    <li>
-        Claim Month : {claim.ClaimMonth:MMM-yyyy}
-    </li>
-
-    <li>
-        Amount : ₹{claim.TotalAmount:N2}
-    </li>
-
-    <li>
-        Status : Pending Approval
-    </li>
-
-    <li>
-        Approval Level : {nextLevel.Value}
-    </li>
+    <li>Claim Number : {claim.ClaimNo}</li>
+    <li>Claim Type : Local Expense Claim</li>
+    <li>Claim Month : {claim.ClaimMonth:MMM-yyyy}</li>
+    <li>Amount : ₹{claim.TotalAmount:N2}</li>
+    <li>Status : Pending Approval</li>
+    <li>Approval Level : {nextLevel.Value}</li>
 </ul>
 
 <b>Purpose</b>
 
-<p>
-    {purpose}
-</p>
+<p>{purpose}</p>
 
 <br/>
 
 <a href='{approveUrl}'
-style='background:green;
-color:white;
-padding:10px 20px;
-text-decoration:none;
-border-radius:5px;'>
-
+style='background:green;color:white;padding:10px 20px;
+text-decoration:none;border-radius:5px;'>
 Approve
-
 </a>
 
 &nbsp;&nbsp;
 
 <a href='{rejectUrl}'
-style='background:red;
-color:white;
-padding:10px 20px;
-text-decoration:none;
-border-radius:5px;'>
-
+style='background:red;color:white;padding:10px 20px;
+text-decoration:none;border-radius:5px;'>
 Reject
-
 </a>
 
 <br/><br/>
@@ -7332,72 +7343,58 @@ Local Expense Claim Portal
 
                         emailSentCount++;
                     }
-                    catch
+                    catch (Exception)
                     {
                         emailFailedCount++;
                     }
                 }
 
                 // ==========================================
-                // 25. COMMIT
+                // 20. COMMIT TRANSACTION
                 // ==========================================
 
                 await transaction.CommitAsync();
 
                 // ==========================================
-                // 26. SUCCESS RESPONSE
+                // 21. SUCCESS RESPONSE
                 // ==========================================
 
                 return Ok(new
                 {
                     success = true,
-
                     message =
                         "Claim approved and moved to the next approval level.",
-
                     data = new
                     {
-                        claimId =
-                            claim.ClaimId,
-
-                        claimNo =
-                            claim.ClaimNo,
-
-                        approvedLevel =
-                            approval.ApprovalLevel,
-
-                        nextApprovalLevel =
-                            nextLevel.Value,
-
-                        status =
-                            claim.Status,
-
-                        currentApprovalLevel =
-                            claim.CurrentApprovalLevel,
-
-                        nextLevelApproverCount =
-                            nextLevelApprovals.Count,
-
-                        emailSentCount =
-                            emailSentCount,
-
-                        emailFailedCount =
-                            emailFailedCount
+                        claimId = claim.ClaimId,
+                        claimNo = claim.ClaimNo,
+                        departmentId,
+                        approvedLevel = approval.ApprovalLevel,
+                        nextApprovalLevel = nextLevel.Value,
+                        status = claim.Status,
+                        currentApprovalLevel = claim.CurrentApprovalLevel,
+                        nextLevelApproverCount = nextLevelApprovals.Count,
+                        emailSentCount,
+                        emailFailedCount
                     }
                 });
             }
             catch (Exception ex)
             {
-                await transaction.RollbackAsync();
+                try
+                {
+                    await transaction.RollbackAsync();
+                }
+                catch (Exception)
+                {
+                    // Preserve the original exception.
+                }
 
                 return StatusCode(500, new
                 {
                     success = false,
-                    message =
-                        "Error while approving claim.",
-                    error =
-                        ex.InnerException?.Message
-                        ?? ex.Message
+                    message = "Error while approving claim.",
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
@@ -7405,15 +7402,15 @@ Local Expense Claim Portal
 
         [HttpPost("mail-reject")]
         public async Task<IActionResult> MailReject(
-    [FromForm] Guid token,
-    [FromForm] string? reason)
+            [FromForm] Guid token,
+            [FromForm] string? reason)
         {
             try
             {
-                var orgIdClaim = User.FindFirst("orgId")?.Value;
-                // ==========================================
-                // FIND PENDING APPROVAL BY TOKEN
-                // ==========================================
+                if (token == Guid.Empty)
+                {
+                    return BadRequest("Invalid rejection token.");
+                }
 
                 var approval = await _context.ClaimApprovals
                     .FirstOrDefaultAsync(x =>
@@ -7421,916 +7418,154 @@ Local Expense Claim Portal
                         x.Status == "Pending");
 
                 if (approval == null)
-                {
-                    return Content(@"
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name='viewport' content='width=device-width, initial-scale=1'>
-</head>
-
-<body style='font-family:Segoe UI;text-align:center;padding-top:70px;background:#f5f5f5'>
-
-<div style='max-width:500px;margin:auto;background:white;padding:30px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.15)'>
-
-<h2 style='color:red'>
-Invalid or Expired Rejection Link
-</h2>
-
-<p>
-This approval link has already been used or is no longer valid.
-</p>
-
-</div>
-
-</body>
-</html>",
-                        "text/html");
-                }
-
-                // ==========================================
-                // GET CLAIM
-                // ==========================================
-
-                var claim = await _context.ClaimMasters
-                    .FirstOrDefaultAsync(x =>
-                        x.ClaimId == approval.ClaimId &&
-                        x.IsActive);
-
-                if (claim == null)
-                {
-                    return Content("Claim not found.");
-                }
-
-                // ==========================================
-                // CHECK CLAIM STATUS
-                // ==========================================
-
-                if (claim.Status != "Pending")
-                {
-                    return Content("This claim is no longer pending.");
-                }
-
-                // ==========================================
-                // REJECT CURRENT APPROVAL
-                // ==========================================
-
-                approval.Status = "Rejected";
-
-                approval.Remarks =
-                    string.IsNullOrWhiteSpace(reason)
-                        ? "Rejected From Email"
-                        : reason.Trim();
-
-                approval.ActionDate = DateTime.Now;
-
-                // ==========================================
-                // UPDATE CLAIM
-                // ==========================================
-
-                claim.Status = "Rejected";
-                claim.RejectedAt = DateTime.Now;
-                claim.CurrentApprovalLevel = null;
-                claim.LastModifiedAt = DateTime.Now;
-
-                // ==========================================
-                // CANCEL FUTURE APPROVALS
-                // ==========================================
-
-                var futureApprovals = await _context.ClaimApprovals
-                    .Where(x =>
-                        x.ClaimId == approval.ClaimId &&
-                        x.ApprovalLevel > approval.ApprovalLevel &&
-                        x.Status == "Pending")
-                    .ToListAsync();
-
-                foreach (var item in futureApprovals)
-                {
-                    item.Status = "Cancelled";
-                    item.Remarks = "Cancelled due to previous level rejection";
-                    item.ActionDate = DateTime.Now;
-                }
-
-                // ==========================================
-                // SAVE
-                // ==========================================
-
-                await _context.SaveChangesAsync();
-
-                // ==========================================
-                // SUCCESS PAGE
-                // ==========================================
-
-                var safeReason =
-                    string.IsNullOrWhiteSpace(reason)
-                        ? "Rejected From Email"
-                        : reason.Trim();
-
-                return Content($@"
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name='viewport' content='width=device-width, initial-scale=1'>
-    <meta charset='utf-8'>
-    <title>Claim Rejected</title>
-</head>
-
-<body style='font-family:Segoe UI;background:#f5f5f5'>
-
-<div style='max-width:500px;
-margin:80px auto;
-background:white;
-padding:40px;
-border-radius:12px;
-box-shadow:0 4px 15px rgba(0,0,0,.15);
-text-align:center;'>
-
-<div style='font-size:70px;color:#d32f2f'>
-❌
-</div>
-
-<h2 style='color:#d32f2f;margin-top:10px'>
-Claim Rejected Successfully
-</h2>
-
-<p style='font-size:16px;color:#555'>
-The claim has been rejected successfully.
-</p>
-
-<hr>
-
-<p>
-<b>Reason</b>
-</p>
-
-<div style='background:#fff3f3;
-padding:15px;
-border-left:5px solid #d32f2f;
-border-radius:6px;
-font-size:15px;'>
-
-{System.Net.WebUtility.HtmlEncode(safeReason)}
-
-</div>
-
-<br>
-
-<p style='color:#888'>
-You may now close this window.
-</p>
-
-</div>
-
-</body>
-</html>",
-                    "text/html");
-            }
-            catch (Exception ex)
-            {
-                return Content($@"
-<html>
-<body style='font-family:Segoe UI;text-align:center;padding-top:60px'>
-<h2 style='color:red'>Error</h2>
-<p>{System.Net.WebUtility.HtmlEncode(ex.Message)}</p>
-</body>
-</html>",
-                    "text/html");
-            }
-        }
-
-        [HttpGet("mail-approve")]
-        public async Task<IActionResult> MailApprove(Guid token)
-        {
-            try
-            {
-                var orgIdClaim = User.FindFirst("orgId")?.Value;
-                // ==========================================
-                // FIND CURRENT PENDING APPROVAL BY TOKEN
-                // ==========================================
-
-                var approval = await _context.ClaimApprovals
-                    .FirstOrDefaultAsync(x =>
-                        x.ApprovalToken == token &&
-                        x.Status == "Pending");
-
-                if (approval == null)
-                {
-                    return Content(@"
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <meta charset='utf-8'>
-    <title>Invalid Approval Link</title>
-</head>
-
-<body style='font-family:Arial,sans-serif;
-background:#f4f6f9;
-display:flex;
-justify-content:center;
-align-items:center;
-height:100vh;
-margin:0;'>
-
-<div style='background:white;
-padding:30px;
-border-radius:12px;
-box-shadow:0 2px 10px rgba(0,0,0,.15);
-text-align:center;
-width:90%;
-max-width:400px;'>
-
-<div style='font-size:60px;color:red;'>✖</div>
-
-<h2 style='color:red;'>
-Invalid Approval Link
-</h2>
-
-<p style='color:#555;'>
-This approval link has already been used or is no longer valid.
-</p>
-
-</div>
-
-</body>
-</html>",
-                        "text/html");
-                }
-
-                // ==========================================
-                // GET CLAIM
-                // ==========================================
-
-                var claim = await _context.ClaimMasters
-                    .FirstOrDefaultAsync(x =>
-                        x.ClaimId == approval.ClaimId &&
-                        x.IsActive);
-
-                if (claim == null)
-                {
-                    return Content("Claim Not Found");
-                }
-
-                // ==========================================
-                // CHECK CLAIM STATUS
-                // ==========================================
-
-                if (claim.Status != "Pending")
-                {
-                    return Content(@"
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-</head>
-
-<body style='font-family:Arial;text-align:center;padding-top:80px;background:#f4f6f9;'>
-
-<div style='background:white;
-max-width:400px;
-margin:auto;
-padding:30px;
-border-radius:12px;
-box-shadow:0 2px 10px rgba(0,0,0,.15);'>
-
-<h2 style='color:#d97706;'>
-Claim Already Processed
-</h2>
-
-<p>
-This claim is no longer pending approval.
-</p>
-
-</div>
-
-</body>
-</html>",
-                        "text/html");
-                }
-                // ==========================================
-                // 11. VALIDATE ACTIVE APPROVAL LEVEL
-                // ==========================================
-
-                if (!claim.CurrentApprovalLevel.HasValue ||
-                    claim.CurrentApprovalLevel.Value != approval.ApprovalLevel)
                 {
                     return Content(
-                        "This approval link is not for the current active approval level.");
+                        "<h2>This approval link is invalid or has already been used.</h2>",
+                        "text/html");
                 }
 
-
-                // ==========================================
-                // 12. GET CLAIM EMPLOYEE FROM COMMON DB
-                // ==========================================
-
-                var claimEmployee = await _commonContext.CompanyUsers
-                    .AsNoTracking()
+                var claim = await _context.ClaimMasters
                     .FirstOrDefaultAsync(x =>
-                        x.EmpId == claim.EmployeeId &&
-                        x.OrgId == claim.OrganizationId &&
-                        x.Status != null &&
-                        x.Status.ToLower() == "active");
+                        x.ClaimId == approval.ClaimId &&
+                        x.IsActive);
 
-                if (claimEmployee == null)
+                if (claim == null)
                 {
-                    return Content("Claim employee not found.");
+                    return Content(
+                        "<h2>Claim not found.</h2>",
+                        "text/html");
                 }
 
-                //if (string.IsNullOrWhiteSpace(claimEmployee.Branch) ||
-                    //string.IsNullOrWhiteSpace(claimEmployee.Department))
+                if (claim.Status != "Pending")
                 {
-                    return Content("Employee branch or department is missing.");
+                    return Content(
+                        "<h2>This claim is no longer pending.</h2>",
+                        "text/html");
                 }
 
+                if (claim.CurrentApprovalLevel != approval.ApprovalLevel)
+                {
+                    return Content(
+                        "<h2>This approval level is no longer active.</h2>",
+                        "text/html");
+                }
 
-                // ==========================================
-                // 13. GET DEPARTMENT APPROVAL CONFIGURATION
-                // ==========================================
-
-                const string moduleCode = "travel_portal";
+                // Validate selected department and its approval configuration.
+                if (!claim.DepartmentId.HasValue ||
+                    !approval.DepartmentApprovalConfigId.HasValue)
+                {
+                    return Content(
+                        "<h2>Department approval configuration is missing.</h2>",
+                        "text/html");
+                }
 
                 var departmentConfig =
                     await _context.DepartmentApprovalConfigs
                         .FirstOrDefaultAsync(x =>
+                            x.Id == approval.DepartmentApprovalConfigId.Value &&
                             x.OrganizationId == claim.OrganizationId &&
-                            x.ModuleCode == moduleCode &&
-                            //x.Branch == claimEmployee.Branch.Trim() &&
-                            x.Department == claimEmployee.Department.Trim() &&
+                            x.DepartmentId == claim.DepartmentId.Value &&
+                            x.ModuleCode == "travel_portal" &&
                             x.IsActive);
 
                 if (departmentConfig == null)
                 {
                     return Content(
-                        "Department approval configuration not found.");
-                }
-
-
-                // ==========================================
-                // 14. GET EMPLOYEE APPROVAL CONFIGURATION
-                // ==========================================
-
-                var currentConfig =
-                    await _context.EmployeeApprovalConfigs
-                        .FirstOrDefaultAsync(x =>
-                            x.OrganizationId == claim.OrganizationId &&
-                            x.DepartmentApprovalConfigId == departmentConfig.Id &&
-                            x.EmployeeId == claim.EmployeeId &&
-                            x.ApprovalLevel == approval.ApprovalLevel &&
-                            x.IsActive);
-
-                if (currentConfig == null)
-                {
-                    return Content(
-                        $"Employee approval configuration not found for Level {approval.ApprovalLevel}.");
-                }
-
-
-                // ==========================================
-                // 15. ANYONE APPROVAL RULE
-                // ==========================================
-
-                string approvalMode =
-                    currentConfig.ApprovalRule?.Trim() ?? "";
-
-                if (!approvalMode.Equals(
-                        "AnyOne",
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    return Content(
-                        "Only AnyOne approval rule is currently supported.");
-                }
-
-                // ==========================================
-                // APPROVE CURRENT RECORD
-                // ==========================================
-
-                approval.Status = "Approved";
-                approval.Remarks = "Approved From Email";
-                approval.ActionDate = DateTime.Now;
-
-                await _context.SaveChangesAsync();
-
-                // ==========================================
-                // CHECK CURRENT LEVEL
-                // ==========================================
-
-                bool currentLevelCompleted = false;
-
-                // ==========================================
-                // ANY ONE
-                // ==========================================
-
-                if (approvalMode.Equals(
-                        "AnyOne",
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    currentLevelCompleted = true;
-
-                    // Other same-level pending approvals
-                    // are no longer required.
-
-                    var sameLevelPending =
-                        await _context.ClaimApprovals
-                            .Where(x =>
-                                x.ClaimId == approval.ClaimId &&
-                                x.ApprovalLevel == approval.ApprovalLevel &&
-                                x.Status == "Pending")
-                            .ToListAsync();
-
-                    foreach (var item in sameLevelPending)
-                    {
-                        item.Status = "Skipped";
-                        item.Remarks = "Skipped because another approver approved this level.";
-                        item.ActionDate = DateTime.Now;
-                    }
-
-                    if (sameLevelPending.Count > 0)
-                    {
-                        await _context.SaveChangesAsync();
-                    }
-                }
-
-                // ==========================================
-                // ALL MODE - WAIT FOR OTHER APPROVERS
-                // ==========================================
-
-                if (!currentLevelCompleted)
-                {
-                    claim.CurrentApprovalLevel = approval.ApprovalLevel;
-                    claim.LastModifiedAt = DateTime.Now;
-
-                    await _context.SaveChangesAsync();
-
-                    return Content(@"
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <meta charset='utf-8'>
-    <title>Approval Recorded</title>
-</head>
-
-<body style='font-family:Arial,sans-serif;
-background:#f4f6f9;
-display:flex;
-justify-content:center;
-align-items:center;
-height:100vh;
-margin:0;'>
-
-<div style='background:white;
-padding:30px;
-border-radius:12px;
-box-shadow:0 2px 10px rgba(0,0,0,.15);
-text-align:center;
-width:90%;
-max-width:400px;'>
-
-<div style='font-size:60px;color:#f59e0b;'>✓</div>
-
-<div style='font-size:24px;
-font-weight:bold;
-color:#f59e0b;
-margin-top:10px;'>
-Approval Recorded
-</div>
-
-<p style='color:#555;'>
-Your approval has been recorded.
-Waiting for the remaining approvers at this level.
-</p>
-
-</div>
-
-</body>
-</html>",
+                        "<h2>Invalid department approval configuration.</h2>",
                         "text/html");
                 }
 
-                // ==========================================
-                // FIND NEXT PENDING APPROVAL
-                // ==========================================
+                // Ensure this approval belongs to the selected configuration.
+                var approvalBelongsToClaim =
+                    await _context.ClaimApprovals.AnyAsync(x =>
+                        x.ApprovalId == approval.ApprovalId &&
+                        x.ClaimId == claim.ClaimId &&
+                        x.DepartmentApprovalConfigId ==
+                            departmentConfig.Id);
 
-                var nextPending = await _context.ClaimApprovals
-                    .Where(x =>
-                        x.ClaimId == approval.ClaimId &&
-                        x.Status == "Pending" &&
-                        x.ApproverEmpId.HasValue &&
-                        x.ApprovalLevel > approval.ApprovalLevel)
-                    .OrderBy(x => x.ApprovalLevel)
-                    .FirstOrDefaultAsync();
-
-                // ==========================================
-                // NO NEXT LEVEL
-                // FINAL APPROVAL
-                // ==========================================
-
-                if (nextPending == null)
+                if (!approvalBelongsToClaim)
                 {
-                    // Any leftover pending records should not block
-                    // final completion.
+                    return Content(
+                        "<h2>Approval configuration does not match this claim.</h2>",
+                        "text/html");
+                }
 
-                    var remainingApprovals =
-                        await _context.ClaimApprovals
-                            .Where(x =>
-                                x.ClaimId == approval.ClaimId &&
-                                x.Status == "Pending")
-                            .ToListAsync();
+                await using var transaction =
+                    await _context.Database.BeginTransactionAsync();
 
-                    foreach (var item in remainingApprovals)
-                    {
-                        item.Status = "Skipped";
-                        item.Remarks = "Skipped after final approval.";
-                        item.ActionDate = DateTime.Now;
-                    }
+                try
+                {
+                    approval.Status = "Rejected";
+                    approval.Remarks = string.IsNullOrWhiteSpace(reason)
+                        ? "Rejected From Email"
+                        : reason.Trim();
 
-                    claim.Status = "Approved";
-                    claim.ApprovedAt = DateTime.Now;
+                    approval.ActionDate = DateTime.Now;
+
+                    claim.Status = "Rejected";
+                    claim.RejectedAt = DateTime.Now;
                     claim.CurrentApprovalLevel = null;
                     claim.LastModifiedAt = DateTime.Now;
 
-                    await _context.SaveChangesAsync();
+                    // Cancel only future approvals belonging to this
+                    // claim's selected department configuration.
+                    var futureApprovals =
+                        await _context.ClaimApprovals
+                            .Where(x =>
+                                x.ClaimId == claim.ClaimId &&
+                                x.DepartmentApprovalConfigId ==
+                                    departmentConfig.Id &&
+                                x.ApprovalLevel > approval.ApprovalLevel &&
+                                x.Status == "Pending")
+                            .ToListAsync();
 
-                    return Content(@"
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <meta charset='utf-8'>
-    <title>Claim Approved</title>
-
-<style>
-
-body{
-    font-family:Arial,sans-serif;
-    background:#f4f6f9;
-    display:flex;
-    justify-content:center;
-    align-items:center;
-    height:100vh;
-    margin:0;
-}
-
-.card{
-    background:white;
-    padding:30px;
-    border-radius:12px;
-    box-shadow:0 2px 10px rgba(0,0,0,0.15);
-    text-align:center;
-    width:90%;
-    max-width:400px;
-}
-
-.icon{
-    font-size:60px;
-    color:green;
-}
-
-.title{
-    color:green;
-    font-size:24px;
-    font-weight:bold;
-    margin-top:10px;
-}
-
-.message{
-    margin-top:10px;
-    color:#555;
-}
-
-</style>
-
-</head>
-
-<body>
-
-<div class='card'>
-
-    <div class='icon'>✔</div>
-
-    <div class='title'>
-        Claim Approved
-    </div>
-
-    <div class='message'>
-        The claim has been approved successfully.
-    </div>
-
-</div>
-
-</body>
-</html>",
-                        "text/html");
-                }
-
-                // ==========================================
-                // MOVE CLAIM TO NEXT LEVEL
-                // ==========================================
-
-                claim.CurrentApprovalLevel = nextPending.ApprovalLevel;
-                claim.LastModifiedAt = DateTime.Now;
-
-                await _context.SaveChangesAsync();
-                // ==========================================
-                // GET NEXT APPROVER FROM COMMON LOGIN DB
-                // ==========================================
-
-                var nextApprover = await _commonContext.CompanyUsers
-                    .AsNoTracking()
-                    .FirstOrDefaultAsync(x =>
-                        x.EmpId == nextPending.ApproverEmpId.Value &&
-                        x.OrgId == claim.OrganizationId &&
-                        x.Status != null &&
-                        x.Status.ToLower() == "active");
-
-                if (nextApprover == null)
-                {
-                    return Content(@"
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <meta charset='utf-8'>
-    <title>Next Approver Not Found</title>
-</head>
-
-<body style='font-family:Arial;text-align:center;padding-top:80px;background:#f4f6f9;'>
-
-<div style='background:white;
-max-width:450px;
-margin:auto;
-padding:30px;
-border-radius:12px;
-box-shadow:0 2px 10px rgba(0,0,0,.15);'>
-
-<h2 style='color:#d97706;'>
-Next Approver Not Found
-</h2>
-
-<p>
-Approval moved to the next level, but the configured approver could not be found.
-</p>
-
-</div>
-
-</body>
-</html>",
-                        "text/html");
-                }
-                // ==========================================
-                // GET CLAIM EMPLOYEE
-                // ==========================================
-
-                var employee = await _context.EmployeeMasters
-                    .FirstOrDefaultAsync(x =>
-                        x.EmpId == claim.EmployeeId &&
-                        x.OrganizationId == claim.OrganizationId &&
-                        x.IsActive);
-
-                if (employee == null)
-                {
-                    return Content("Claim Employee Not Found");
-                }
-
-                // ==========================================
-                // GET DEPARTMENT
-                // ==========================================
-
-                string departmentName = "-";
-
-                if (employee.DepartmentId.HasValue)
-                {
-                    var department = await _context.Department_Master
-                        .FirstOrDefaultAsync(x =>
-                            x.DepartmentId == employee.DepartmentId.Value);
-
-                    if (department != null)
+                    foreach (var futureApproval in futureApprovals)
                     {
-                        departmentName = department.DepartmentName;
+                        futureApproval.Status = "Cancelled";
+                        futureApproval.ActionDate = DateTime.Now;
                     }
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    var safeReason = System.Net.WebUtility.HtmlEncode(
+                        string.IsNullOrWhiteSpace(reason)
+                            ? "Rejected From Email"
+                            : reason.Trim());
+
+                    return Content($@"
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset='utf-8'>
+                    <title>Claim Rejected</title>
+                </head>
+                <body style='font-family:Arial,sans-serif;
+                             text-align:center;padding:40px;'>
+                    <h2 style='color:#c62828;'>Claim Rejected</h2>
+                    <p>The claim has been rejected successfully.</p>
+                    <p><b>Claim No:</b>
+                        {System.Net.WebUtility.HtmlEncode(claim.ClaimNo ?? "")}
+                    </p>
+                    <p><b>Reason:</b> {safeReason}</p>
+                </body>
+                </html>",
+                        "text/html");
                 }
-
-                // ==========================================
-                // GET PURPOSE
-                // ==========================================
-
-                string purpose = "-";
-
-                var firstTravel = await _context.ClaimTravels
-                    .FirstOrDefaultAsync(x =>
-                        x.ClaimId == claim.ClaimId);
-
-                if (firstTravel != null &&
-                    !string.IsNullOrWhiteSpace(firstTravel.Purpose))
+                catch
                 {
-                    purpose = firstTravel.Purpose;
+                    await transaction.RollbackAsync();
+                    throw;
                 }
-
-                // ==========================================
-                // SEND MAIL TO NEXT APPROVER
-                // ==========================================
-
-                if (!string.IsNullOrWhiteSpace(nextApprover.Email))
-                {
-                    var baseUrl =
-                        _configuration["AppSettings:BaseUrl"];
-
-                    var approveUrl =
-                        $"{baseUrl}/api/TravelMaster/mail-approve?token={nextPending.ApprovalToken}";
-
-                    var rejectUrl =
-                        $"{baseUrl}/api/TravelMaster/reject-form?token={nextPending.ApprovalToken}";
-
-                    string body = $@"
-
-Dear {nextApprover.FullName},
-
-<br/><br/>
-
-A Local Expense Claim requires your approval.
-
-<br/><br/>
-
-<b>Employee Details</b>
-
-<ul>
-    <li>Employee Name : {employee.FullName}</li>
-    <li>Employee ID : {employee.EmployeeCode}</li>
-    <li>Department : {departmentName}</li>
-</ul>
-
-<b>Claim Details</b>
-
-<ul>
-    <li>Claim Number : {claim.ClaimNo}</li>
-    <li>Claim Type : Local Expense Claim</li>
-    <li>Claim Month : {claim.ClaimMonth:MMM-yyyy}</li>
-    <li>Amount : ₹{claim.TotalAmount:N2}</li>
-    <li>Status : Pending Approval</li>
-    <li>Approval Level : {nextPending.ApprovalLevel}</li>
-</ul>
-
-<b>Purpose</b>
-
-<p>{purpose}</p>
-
-<br/>
-
-<a href='{approveUrl}'
-style='background:green;
-color:white;
-padding:10px 20px;
-text-decoration:none;
-border-radius:5px;'>
-
-Approve
-
-</a>
-
-&nbsp;&nbsp;
-
-<a href='{rejectUrl}'
-style='background:red;
-color:white;
-padding:10px 20px;
-text-decoration:none;
-border-radius:5px;'>
-
-Reject
-
-</a>
-
-<br/><br/>
-
-Regards,<br/>
-Local Expense Claim Portal
-";
-
-                    await _emailService.SendEmailAsync(
-                        nextApprover.Email,
-                        $"Claim Approval Required - {claim.ClaimNo}",
-                        body);
-                }
-
-                // ==========================================
-                // SUCCESS PAGE
-                // ==========================================
-
-                return Content($@"
-<!DOCTYPE html>
-<html>
-
-<head>
-
-<meta name='viewport'
-      content='width=device-width, initial-scale=1.0'>
-
-<meta charset='utf-8'>
-
-<title>Claim Approved</title>
-
-<style>
-
-body{{
-    font-family:Arial,sans-serif;
-    background:#f4f6f9;
-    display:flex;
-    justify-content:center;
-    align-items:center;
-    height:100vh;
-    margin:0;
-}}
-
-.card{{
-    background:white;
-    padding:30px;
-    border-radius:12px;
-    box-shadow:0 2px 10px rgba(0,0,0,0.15);
-    text-align:center;
-    width:90%;
-    max-width:400px;
-}}
-
-.icon{{
-    font-size:60px;
-    color:green;
-}}
-
-.title{{
-    color:green;
-    font-size:24px;
-    font-weight:bold;
-    margin-top:10px;
-}}
-
-.message{{
-    margin-top:10px;
-    color:#555;
-}}
-
-</style>
-
-</head>
-
-<body>
-
-<div class='card'>
-
-    <div class='icon'>✔</div>
-
-    <div class='title'>
-        Approval Completed
-    </div>
-
-    <div class='message'>
-        Your approval has been recorded successfully.
-        The claim has moved to the next approval level.
-    </div>
-
-</div>
-
-</body>
-
-</html>",
-                    "text/html");
             }
             catch (Exception ex)
             {
-                return Content($@"
-<!DOCTYPE html>
-<html>
-
-<head>
-    <meta name='viewport'
-          content='width=device-width, initial-scale=1.0'>
-</head>
-
-<body style='font-family:Arial;
-text-align:center;
-padding-top:70px;
-background:#f4f6f9;'>
-
-<div style='max-width:450px;
-margin:auto;
-background:white;
-padding:30px;
-border-radius:12px;
-box-shadow:0 2px 10px rgba(0,0,0,.15);'>
-
-<h2 style='color:red;'>
-Error
-</h2>
-
-<p>
-{System.Net.WebUtility.HtmlEncode(
-            ex.InnerException?.Message ?? ex.Message)}
-</p>
-
-</div>
-
-</body>
-</html>",
-                    "text/html");
+                // Log ex using your existing logger.
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Unable to reject the claim."
+                });
             }
         }
         [Authorize]
@@ -8340,77 +7575,33 @@ Error
         {
             try
             {
-               
-                // ==========================================
-                // VALIDATE REQUEST
-                // ==========================================
-
-                if (dto == null)
+                if (dto == null || dto.ClaimId <= 0)
                 {
                     return BadRequest(new
                     {
                         success = false,
-                        message = "Rejection request is required."
+                        message = "Invalid claim details."
                     });
                 }
 
-                // ==========================================
-                // GET EMPLOYEE ID FROM JWT
-                // ==========================================
+                var empIdValue = User.FindFirst("EmpId")?.Value;
+                var orgIdValue = User.FindFirst("orgId")?.Value
+                                 ?? User.FindFirst("OrganizationId")?.Value;
 
-                var empIdClaim = User.FindFirst("EmpId")?.Value;
-
-                if (string.IsNullOrWhiteSpace(empIdClaim))
+                if (!int.TryParse(empIdValue, out int empId) ||
+                    !int.TryParse(orgIdValue, out int orgId))
                 {
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "EmpId not found in token."
+                        message = "Invalid employee or organization token."
                     });
                 }
-
-                if (!int.TryParse(empIdClaim, out int empId) || empId <= 0)
-                {
-                    return Unauthorized(new
-                    {
-                        success = false,
-                        message = "Invalid EmpId in token."
-                    });
-                }
-
-                // ==========================================
-                // GET ORGANIZATION ID FROM JWT
-                // ==========================================
-
-                var orgIdClaim = User.FindFirst("orgId")?.Value;
-
-                if (string.IsNullOrWhiteSpace(orgIdClaim))
-                {
-                    return Unauthorized(new
-                    {
-                        success = false,
-                        message = "orgId not found in token."
-                    });
-                }
-
-                if (!int.TryParse(orgIdClaim, out int organizationId) ||
-                    organizationId <= 0)
-                {
-                    return Unauthorized(new
-                    {
-                        success = false,
-                        message = "Invalid Org_Id in token."
-                    });
-                }
-
-                // ==========================================
-                // GET CLAIM
-                // ==========================================
 
                 var claim = await _context.ClaimMasters
                     .FirstOrDefaultAsync(x =>
                         x.ClaimId == dto.ClaimId &&
-                        x.OrganizationId == organizationId &&
+                        x.OrganizationId == orgId &&
                         x.IsActive);
 
                 if (claim == null)
@@ -8422,139 +7613,145 @@ Error
                     });
                 }
 
-                // ==========================================
-                // CHECK CLAIM STATUS
-                // ==========================================
-
                 if (claim.Status != "Pending")
                 {
                     return BadRequest(new
                     {
                         success = false,
-                        message =
-                            $"Claim cannot be rejected because its current status is '{claim.Status}'."
+                        message = "Only pending claims can be rejected."
                     });
                 }
 
-                // ==========================================
-                // GET APPROVER EMPLOYEE
-                // ==========================================
+                if (!claim.DepartmentId.HasValue)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Claim department is missing."
+                    });
+                }
 
-                var approverEmployee = await _context.EmployeeMasters
+                // Use the Common DB for employee validation.
+                var approverEmployee = await _commonContext.CompanyUsers
                     .FirstOrDefaultAsync(x =>
                         x.EmpId == empId &&
-                        x.OrganizationId == organizationId &&
-                        x.IsActive);
+                        x.OrgId == orgId &&
+                        x.Status == "Active");
 
                 if (approverEmployee == null)
                 {
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "Approver employee not found in the current organization."
+                        message = "Active approver not found."
                     });
                 }
 
-                // ==========================================
-                // GET CURRENT PENDING APPROVAL
-                // ==========================================
-
+                // Get the pending approval assigned to this employee
+                // for this claim's selected department configuration.
                 var approval = await _context.ClaimApprovals
                     .FirstOrDefaultAsync(x =>
-                        x.ClaimId == dto.ClaimId &&
+                        x.ClaimId == claim.ClaimId &&
                         x.ApproverEmpId == empId &&
-                        x.Status == "Pending");
+                        x.Status == "Pending" &&
+                        x.DepartmentApprovalConfigId != null);
 
                 if (approval == null)
                 {
                     return BadRequest(new
                     {
                         success = false,
-                        message = "Approval record not found or already processed."
+                        message = "No pending approval found for this employee."
                     });
                 }
 
-                // ==========================================
-                // VERIFY CURRENT LEVEL
-                // ==========================================
+                var departmentConfig =
+                    await _context.DepartmentApprovalConfigs
+                        .FirstOrDefaultAsync(x =>
+                            x.Id == approval.DepartmentApprovalConfigId &&
+                            x.OrganizationId == claim.OrganizationId &&
+                            x.DepartmentId == claim.DepartmentId.Value &&
+                            x.ModuleCode == "travel_portal" &&
+                            x.IsActive);
 
-                if (claim.CurrentApprovalLevel.HasValue &&
-                    claim.CurrentApprovalLevel.Value != approval.ApprovalLevel)
+                if (departmentConfig == null)
                 {
                     return BadRequest(new
                     {
                         success = false,
-                        message = "This approval level is not currently active."
+                        message = "Approval does not match the claim's selected department."
                     });
                 }
 
-                // ==========================================
-                // REJECT CURRENT APPROVAL
-                // ==========================================
+                if (claim.CurrentApprovalLevel != approval.ApprovalLevel)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "This approval level is no longer active."
+                    });
+                }
 
-                approval.Status = "Rejected";
+                await using var transaction =
+                    await _context.Database.BeginTransactionAsync();
 
-                approval.Remarks =
-                    string.IsNullOrWhiteSpace(dto.Remarks)
+                try
+                {
+                    approval.Status = "Rejected";
+                    approval.Remarks = string.IsNullOrWhiteSpace(dto.Remarks)
                         ? "NA"
                         : dto.Remarks.Trim();
 
-                approval.ActionDate = DateTime.Now;
+                    approval.ActionDate = DateTime.Now;
 
-                // ==========================================
-                // UPDATE CLAIM
-                // ==========================================
+                    claim.Status = "Rejected";
+                    claim.RejectedAt = DateTime.Now;
+                    claim.CurrentApprovalLevel = null;
+                    claim.LastModifiedAt = DateTime.Now;
 
-                claim.Status = "Rejected";
-                claim.RejectedAt = DateTime.Now;
-                claim.CurrentApprovalLevel = null;
-                claim.LastModifiedAt = DateTime.Now;
+                    // Cancel future approvals only for this department config.
+                    var futureApprovals =
+                        await _context.ClaimApprovals
+                            .Where(x =>
+                                x.ClaimId == claim.ClaimId &&
+                                x.DepartmentApprovalConfigId ==
+                                    departmentConfig.Id &&
+                                x.ApprovalLevel > approval.ApprovalLevel &&
+                                x.Status == "Pending")
+                            .ToListAsync();
 
-                // ==========================================
-                // CANCEL FUTURE APPROVALS
-                // ==========================================
-
-                var futureApprovals = await _context.ClaimApprovals
-                    .Where(x =>
-                        x.ClaimId == dto.ClaimId &&
-                        x.ApprovalLevel > approval.ApprovalLevel &&
-                        x.Status == "Pending")
-                    .ToListAsync();
-
-                foreach (var item in futureApprovals)
-                {
-                    item.Status = "Cancelled";
-                    item.Remarks = "Cancelled due to previous level rejection";
-                    item.ActionDate = DateTime.Now;
-                }
-
-                // ==========================================
-                // SAVE
-                // ==========================================
-
-                await _context.SaveChangesAsync();
-
-                return Ok(new
-                {
-                    success = true,
-                    message = "Claim rejected successfully.",
-                    data = new
+                    foreach (var futureApproval in futureApprovals)
                     {
+                        futureApproval.Status = "Cancelled";
+                        futureApproval.ActionDate = DateTime.Now;
+                    }
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    return Ok(new
+                    {
+                        success = true,
+                        message = "Claim rejected successfully.",
                         claimId = claim.ClaimId,
                         claimNo = claim.ClaimNo,
-                        status = claim.Status,
-                        rejectedAt = claim.RejectedAt,
-                        rejectedLevel = approval.ApprovalLevel
-                    }
-                });
+                        departmentId = claim.DepartmentId,
+                        approvalLevel = approval.ApprovalLevel
+                    });
+                }
+                catch
+                {
+                    await transaction.RollbackAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
+                // Log ex using your existing logger.
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Error while rejecting claim.",
-                    error = ex.InnerException?.Message ?? ex.Message
+                    message = "Unable to reject the claim."
                 });
             }
         }
@@ -10783,107 +9980,16 @@ Local Expense Claim Portal
 
         //----------  Appproval Flow For local Expense claim ------------------------\\
 
-        [HttpGet("approval-setup/modules")]
-        public async Task<IActionResult> GetApprovalSetupModules()
-        {
-            try
-            {
-                var orgIdClaim = User.FindFirst("orgId")?.Value
-                                 ?? User.FindFirst("OrganizationId")?.Value;
-
-                if (!int.TryParse(orgIdClaim, out int organizationId)
-                    || organizationId <= 0)
-                {
-                    return Unauthorized(new
-                    {
-                        message = "Invalid organization ID."
-                    });
-                }
-
-                var modules = await
-                    (from organizationModule in
-                        _commonContext.OrganizationModules.AsNoTracking()
-
-                     join module in
-                        _commonContext.ModuleMasters.AsNoTracking()
-
-                     on organizationModule.ModuleCode equals module.ModuleCode
-
-                     where organizationModule.OrgId == organizationId
-                           && organizationModule.IsActive
-                           && module.IsActive
-
-                     select new
-                     {
-                         ModuleCode = module.ModuleCode,
-                         ModuleName = module.ModuleName
-                     })
-                    .Distinct()
-                    .OrderBy(x => x.ModuleName)
-                    .ToListAsync();
-
-                return Ok(modules);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new
-                {
-                    message = "Unable to fetch modules.",
-                    error = ex.Message
-                });
-            }
-        }
-
-        //[HttpGet("approval-setup/branches")]
-        //public async Task<IActionResult> GetApprovalSetupBranches()
-        //{
-        //    try
-        //    {
-        //        var orgIdClaim = User.FindFirst("orgId")?.Value
-        //                         ?? User.FindFirst("OrganizationId")?.Value;
-
-        //        if (!int.TryParse(orgIdClaim, out int organizationId)
-        //            || organizationId <= 0)
-        //        {
-        //            return Unauthorized(new
-        //            {
-        //                message = "Invalid organization ID."
-        //            });
-        //        }
-
-        //        //var branches = await _commonContext.CompanyUsers
-        //        //    .AsNoTracking()
-        //        //    .Where(x =>
-        //        //        x.OrgId == organizationId &&
-        //        //        x.Status != null &&()
-        //        //        //x.Status.ToLower() == "active" &&
-        //        //        //x.Branch != null &&
-        //        //        //x.Branch.Trim() != "")
-        //        //    //.Select(x => x.Branch!.Trim())
-        //        //    .Distinct()
-        //        //    .OrderBy(x => x)
-        //        //    .ToListAsync();
-
-        //        //return Ok(branches);
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return StatusCode(500, new
-        //        {
-        //            message = "Unable to fetch branches.",
-        //            error = ex.Message
-        //        });
-        //    }
-        //}
-
         [Authorize]
-        [HttpGet("approval-setup/departments")]
-        public async Task<IActionResult> GetApprovalSetupDepartments(
-            [FromQuery] string branch)
+        [HttpGet("approval-setup/branches")]
+        public async Task<IActionResult> GetApprovalSetupBranches()
         {
             try
             {
-                var orgIdClaim = User.FindFirst("orgId")?.Value;
+                // 1. Get OrganizationId from JWT
+                var orgIdClaim =
+                    User.FindFirst("orgId")?.Value
+                    ?? User.FindFirst("OrganizationId")?.Value;
 
                 if (!int.TryParse(orgIdClaim, out int organizationId) ||
                     organizationId <= 0)
@@ -10895,47 +10001,3270 @@ Local Expense Claim Portal
                     });
                 }
 
-                if (string.IsNullOrWhiteSpace(branch))
-                {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = "Branch is required."
-                    });
-                }
-
-                var departments = await _commonContext.CompanyUsers
+                // 2. Get all branches belonging to this organization
+                var branches = await _commonContext.Branches
                     .AsNoTracking()
-                    .Where(x =>
-                        x.OrgId == organizationId &&
-                        x.Status != null &&
-                        x.Status.ToLower() == "active" &&
-                        //x.Branch != null &&
-                        //x.Branch.Trim() == branch.Trim() &&
-                        x.Department != null &&
-                        x.Department.Trim() != "")
-                    .Select(x => x.Department!.Trim())
-                    .Distinct()
-                    .OrderBy(x => x)
+                    .Where(x => x.OrgId == organizationId)
+                    .OrderBy(x => x.BranchName)
+                    .Select(x => new
+                    {
+                        branchId = x.BranchId,
+                        branchName = x.BranchName
+                    })
                     .ToListAsync();
 
+                // 3. Return response
                 return Ok(new
                 {
                     success = true,
-                    data = departments
+                    organizationId,
+                    data = branches
                 });
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Unable to fetch departments."
+                    message = "Unable to fetch branches.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [Authorize]
+        [HttpGet("approval-setup/departments")]
+        public async Task<IActionResult> GetApprovalSetupDepartments(
+       [FromQuery] int branchId)
+        {
+            try
+            {
+                // ==========================================
+                // 1. GET ORGANIZATION ID FROM JWT
+                // ==========================================
+                var orgIdClaim =
+                    User.FindFirst("orgId")?.Value
+                    ?? User.FindFirst("OrganizationId")?.Value;
+
+                if (!int.TryParse(orgIdClaim, out int organizationId) ||
+                    organizationId <= 0)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid organization ID."
+                    });
+                }
+
+                // ==========================================
+                // 2. VALIDATE BRANCH ID
+                // ==========================================
+                if (branchId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Valid BranchId is required."
+                    });
+                }
+
+                // ==========================================
+                // 3. VERIFY BRANCH BELONGS TO ORGANIZATION
+                // ==========================================
+                bool branchExists = await _commonContext.Branches
+                    .AsNoTracking()
+                    .AnyAsync(b =>
+                        b.BranchId == branchId &&
+                        b.OrgId == organizationId);
+
+                if (!branchExists)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Branch not found for this organization."
+                    });
+                }
+
+                // ==========================================
+                // 4. GET DEPARTMENTS FOR SELECTED BRANCH
+                //    AND ORGANIZATION
+                // ==========================================
+                var departments = await _commonContext.Departments
+                    .AsNoTracking()
+                    .Where(d =>
+                        d.OrgId == organizationId &&
+                        d.BranchId == branchId)
+                    .Select(d => new
+                    {
+                        departmentId = d.Id,
+                        departmentName = d.DepartmentName
+                    })
+                    .Distinct()
+                    .OrderBy(d => d.departmentName)
+                    .ToListAsync();
+
+                // ==========================================
+                // 5. RETURN RESPONSE
+                // ==========================================
+                return Ok(new
+                {
+                    success = true,
+                    organizationId,
+                    branchId,
+                    totalDepartments = departments.Count,
+                    data = departments
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Unable to fetch departments.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+        [Authorize]
+        [HttpGet("approval-setup/employees")]
+        public async Task<IActionResult> GetApprovalSetupEmployees(
+      [FromQuery] int branchId,
+      [FromQuery] string department)
+        {
+            try
+            {
+                // 1. Get OrganizationId from JWT
+                var orgIdClaim = User.FindFirst("orgId")?.Value
+                    ?? User.FindFirst("OrganizationId")?.Value;
+
+                if (!int.TryParse(orgIdClaim, out int organizationId)
+                    || organizationId <= 0)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid organization ID."
+                    });
+                }
+
+                // 2. Validate BranchId
+                if (branchId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Valid BranchId is required."
+                    });
+                }
+
+                // 3. Validate Department IDs
+                if (string.IsNullOrWhiteSpace(department))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "At least one DepartmentId is required."
+                    });
+                }
+
+                var selectedDepartmentIds = new List<int>();
+
+                foreach (var value in department.Split(
+                    ',',
+                    StringSplitOptions.RemoveEmptyEntries |
+                    StringSplitOptions.TrimEntries))
+                {
+                    if (!int.TryParse(value, out int id) || id <= 0)
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = $"Invalid DepartmentId: {value}"
+                        });
+                    }
+
+                    selectedDepartmentIds.Add(id);
+                }
+
+                selectedDepartmentIds = selectedDepartmentIds
+                    .Distinct()
+                    .ToList();
+
+                if (selectedDepartmentIds.Count == 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "At least one valid DepartmentId is required."
+                    });
+                }
+
+                // 4. Validate branch belongs to organization
+                var branch = await _commonContext.Branches
+                    .AsNoTracking()
+                    .Where(b =>
+                        b.BranchId == branchId &&
+                        b.OrgId == organizationId)
+                    .Select(b => new
+                    {
+                        branchId = b.BranchId,
+                        branchName = b.BranchName
+                    })
+                    .FirstOrDefaultAsync();
+
+                if (branch == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Branch not found for this organization."
+                    });
+                }
+
+                // 5. Get departments belonging to this branch and organization
+                var departments = await _commonContext.Departments
+                    .AsNoTracking()
+                    .Where(d =>
+                        d.OrgId == organizationId &&
+                        d.BranchId == branchId &&
+                        selectedDepartmentIds.Contains(d.Id))
+                    .Select(d => new
+                    {
+                        departmentId = d.Id,
+                        departmentName = d.DepartmentName
+                    })
+                    .ToListAsync();
+
+                if (departments.Count != selectedDepartmentIds.Count)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "One or more departments do not belong to this branch or organization."
+                    });
+                }
+
+                // 6. Get employees for this branch and organization
+                var employeeRows = await _commonContext.CompanyUsers
+                    .AsNoTracking()
+                    .Where(e =>
+                        e.OrgId == organizationId &&
+                        e.BranchId == branchId &&
+                        (e.Status == null ||
+                         e.Status.Trim().ToUpper() == "ACTIVE"))
+                    .Select(e => new
+                    {
+                        employeeId = e.EmpId,
+                        employeeCode = e.EmpCode,
+                        employeeName = e.FullName,
+                        departmentId = e.DepartmentId
+                    })
+                    .ToListAsync();
+
+                // 7. Match employee department IDs and return all matching names
+                // Assumes CompanyUsers.DepartmentId stores values such as "13" or "13,14".
+                var employees = employeeRows
+                    .Select(e =>
+                    {
+                        var employeeDepartmentIds = (e.departmentId ?? string.Empty)
+                            .Split(
+                                ',',
+                                StringSplitOptions.RemoveEmptyEntries |
+                                StringSplitOptions.TrimEntries)
+                            .Where(x => int.TryParse(x, out _))
+                            .Select(int.Parse)
+                            .Distinct()
+                            .ToList();
+
+                        var matchedDepartments = departments
+                            .Where(d =>
+                                employeeDepartmentIds.Contains(d.departmentId))
+                            .Select(d => new
+                            {
+                                departmentId = d.departmentId,
+                                departmentName = d.departmentName
+                            })
+                            .ToList();
+
+                        return new
+                        {
+                            e.employeeId,
+                            e.employeeCode,
+                            e.employeeName,
+                            departments = matchedDepartments
+                        };
+                    })
+                    .Where(e => e.departments.Count > 0)
+                    .OrderBy(e => e.employeeName)
+                    .Select(e => new
+                    {
+                        e.employeeId,
+                        e.employeeCode,
+                        e.employeeName,
+                        branchId = branch.branchId,
+                        branchName = branch.branchName,
+                        departments = e.departments
+                    })
+                    .ToList();
+
+                // 8. Return response
+                return Ok(new
+                {
+                    success = true,
+                    organizationId,
+                    branchId = branch.branchId,
+                    branchName = branch.branchName,
+                    departmentIds = selectedDepartmentIds,
+                    totalEmployees = employees.Count,
+                    data = employees
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Unable to fetch employees.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [Authorize]
+        [HttpPost("approval-setup/department-config")]
+        public async Task<IActionResult> SaveDepartmentApprovalConfig(
+            [FromBody] SaveDepartmentApprovalConfigRequest request)
+        {
+            try
+            {
+                var orgClaim =
+                    User.FindFirst("orgId")?.Value ??
+                    User.FindFirst("OrganizationId")?.Value;
+
+                if (!int.TryParse(orgClaim, out int organizationId))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid organization in token."
+                    });
+                }
+
+                var role =
+                    User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value ??
+                    User.FindFirst("role")?.Value;
+
+                if (role is null ||
+                    !(role.Equals("Admin", StringComparison.OrdinalIgnoreCase) ||
+                      role.Equals("SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+                      role.Equals("Super Admin", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return Forbid();
+                }
+
+                if (request == null ||
+                    string.IsNullOrWhiteSpace(request.ModuleCode) ||
+                    request.BranchId <= 0 ||
+                    request.DepartmentId <= 0 ||
+                    request.TotalApprovalLevels < 1 ||
+                    request.TotalApprovalLevels > 10)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Invalid request. Check module, branch, department and approval levels."
+                    });
+                }
+
+                var department = await _commonContext.Departments
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(d =>
+                        d.Id == request.DepartmentId &&
+                        d.OrgId == organizationId &&
+                        d.BranchId == request.BranchId);
+
+                if (department == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Department does not belong to this organization and branch."
+                    });
+                }
+
+                var branch = await _commonContext.Branches
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(b =>
+                        b.BranchId == request.BranchId &&
+                        b.OrgId == organizationId);
+
+                if (branch == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Invalid branch."
+                    });
+                }
+
+                var moduleCode = request.ModuleCode.Trim();
+
+                var moduleEnabled = await (
+     from om in _commonContext.OrganizationModules
+     join mm in _commonContext.ModuleMasters
+         on om.ModuleCode equals mm.ModuleCode  
+     where om.OrgId == organizationId
+           && om.IsActive
+           && mm.IsActive
+           && om.ModuleCode == moduleCode
+     select om
+ ).AnyAsync();
+
+                if (!moduleEnabled)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "This module is not enabled for the organization."
+                    });
+                }
+
+                var branchName = branch.BranchName.Trim();
+
+                var config = await _context.DepartmentApprovalConfigs
+                    .FirstOrDefaultAsync(x =>
+                        x.OrganizationId == organizationId &&
+                        x.ModuleCode == moduleCode &&
+                        x.DepartmentId == request.DepartmentId &&
+                        x.IsActive);
+
+                var now = DateTime.UtcNow;
+
+                if (config != null)
+                {
+                    config.TotalApprovalLevels = request.TotalApprovalLevels;
+                    config.Branch = branchName;
+                    config.UpdatedDate = now;
+                }
+                else
+                {
+                    config = new DepartmentApprovalConfig
+                    {
+                        OrganizationId = organizationId,
+                        ModuleCode = moduleCode,
+                        Branch = branchName,
+                        DepartmentId = request.DepartmentId,
+                        TotalApprovalLevels = request.TotalApprovalLevels,
+                        IsActive = true,
+                        CreatedDate = now
+                    };
+
+                    _context.DepartmentApprovalConfigs.Add(config);
+                }
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Department approval configuration saved successfully.",
+                    data = new
+                    {
+                        config.Id,
+                        config.OrganizationId,
+                        config.ModuleCode,
+                        config.DepartmentId,
+                        config.TotalApprovalLevels,
+                        config.IsActive
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Unable to save department approval configuration.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [Authorize]
+        [HttpGet("approval-setup/department-config")]
+        public async Task<IActionResult> GetDepartmentApprovalConfig()
+        {
+            try
+            {
+                // Step 1: Get OrganizationId from JWT
+                var orgClaim =
+                    User.FindFirst("orgId")?.Value ??
+                    User.FindFirst("OrganizationId")?.Value;
+
+                if (!int.TryParse(orgClaim, out int organizationId))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid organization in token."
+                    });
+                }
+
+                // Step 2: Validate Admin role
+                var role =
+                    User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value ??
+                    User.FindFirst("role")?.Value;
+
+                if (role == null ||
+                    !(role.Equals("Admin", StringComparison.OrdinalIgnoreCase) ||
+                      role.Equals("SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+                      role.Equals("Super Admin", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return Forbid();
+                }
+
+                // Step 3: Get approval configurations from Travel DB
+                var configs = await _context.DepartmentApprovalConfigs
+                    .AsNoTracking()
+                    .Where(x =>
+                        x.OrganizationId == organizationId &&
+                        x.IsActive)
+                    .ToListAsync();
+
+                // Step 4: Get department details from Common DB
+                var departmentIds = configs
+                    .Select(x => x.DepartmentId)
+                    .Distinct()
+                    .ToList();
+
+                var departments = await _commonContext.Departments
+                    .AsNoTracking()
+                    .Where(d => departmentIds.Contains(d.Id))
+                    .ToListAsync();
+
+                // Step 5: Join both results in memory
+                var result = configs
+                    .Select(config =>
+                    {
+                        var department = departments
+                            .FirstOrDefault(d => d.Id == config.DepartmentId);
+
+                        return new
+                        {
+                            departmentApprovalConfigId = config.Id,
+                            departmentId = config.DepartmentId,
+                            departmentName = department?.DepartmentName,
+                            moduleCode = config.ModuleCode,
+                            branch = config.Branch,
+                            totalApprovalLevels = config.TotalApprovalLevels,
+                            isActive = config.IsActive,
+                            createdDate = config.CreatedDate,
+                            updatedDate = config.UpdatedDate
+                        };
+                    })
+                    .OrderBy(x => x.branch)
+                    .ThenBy(x => x.departmentName)
+                    .ToList();
+
+                // Step 6: Return response
+                return Ok(new
+                {
+                    success = true,
+                    organizationId,
+                    totalDepartments = result.Count,
+                    departments = result
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Unable to fetch department approval configuration.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [Authorize]
+        [HttpDelete("approval-setup/department-config/{configId}")]
+        public async Task<IActionResult> DeleteDepartmentApprovalConfig(int configId)
+        {
+            try
+            {
+                // Get OrganizationId from JWT
+                var orgClaim =
+                    User.FindFirst("orgId")?.Value ??
+                    User.FindFirst("OrganizationId")?.Value;
+
+                if (!int.TryParse(orgClaim, out int organizationId))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid organization in token."
+                    });
+                }
+
+                // Validate Admin role
+                var role =
+                    User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value ??
+                    User.FindFirst("role")?.Value;
+
+                if (role == null ||
+                    !(role.Equals("Admin", StringComparison.OrdinalIgnoreCase) ||
+                      role.Equals("SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+                      role.Equals("Super Admin", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return Forbid();
+                }
+
+                if (configId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Invalid configuration ID."
+                    });
+                }
+
+                // Find active configuration for this organization
+                var config = await _context.DepartmentApprovalConfigs
+                    .FirstOrDefaultAsync(x =>
+                        x.Id == configId &&
+                        x.OrganizationId == organizationId &&
+                        x.IsActive);
+
+                if (config == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Active department approval configuration not found."
+                    });
+                }
+
+                // Soft delete
+                config.IsActive = false;
+                config.UpdatedDate = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Department approval configuration deactivated successfully.",
+                    data = new
+                    {
+                        config.Id,
+                        config.OrganizationId,
+                        config.ModuleCode,
+                        config.DepartmentId,
+                        config.TotalApprovalLevels,
+                        config.IsActive
+                    }
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Unable to delete department approval configuration.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [Authorize]
+        [HttpPost("approval-setup/employee-config")]
+        public async Task<IActionResult> SaveEmployeeApprovalConfig(
+    [FromBody] SaveApprovalSetupRequest request)
+        {
+            try
+            {
+                // 1. Organization ID
+                var orgIdClaim =
+                    User.FindFirst("orgId")?.Value ??
+                    User.FindFirst("OrganizationId")?.Value;
+
+                if (!int.TryParse(orgIdClaim, out int organizationId) ||
+                    organizationId <= 0)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid organization ID."
+                    });
+                }
+
+                // 2. Role validation
+                var role =
+                    User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value ??
+                    User.FindFirst("role")?.Value;
+
+                bool isAdmin =
+                    string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(role, "Super Admin", StringComparison.OrdinalIgnoreCase);
+
+                if (!isAdmin)
+                {
+                    return StatusCode(403, new
+                    {
+                        success = false,
+                        message = "Only Admin or SuperAdmin can configure approvals."
+                    });
+                }
+
+                // 3. Request validation
+                if (request == null ||
+                    string.IsNullOrWhiteSpace(request.ModuleCode) ||
+                    request.BranchId <= 0 ||
+                    request.DepartmentId <= 0 ||
+                    request.EmployeeId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "ModuleCode, BranchId, DepartmentId and EmployeeId are required."
+                    });
+                }
+
+                string moduleCode = request.ModuleCode.Trim();
+
+                // 4. Validate module access
+                bool moduleEnabled = await (
+                    from om in _commonContext.OrganizationModules.AsNoTracking()
+                    join mm in _commonContext.ModuleMasters.AsNoTracking()
+                        on om.ModuleCode equals mm.ModuleCode
+                    where om.OrgId == organizationId
+                          && om.IsActive
+                          && mm.IsActive
+                          && om.ModuleCode == moduleCode
+                    select om
+                ).AnyAsync();
+
+                if (!moduleEnabled)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Selected module is not enabled for this organization."
+                    });
+                }
+
+                // 5. Validate branch
+                var branch = await _commonContext.Branches
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.BranchId == request.BranchId &&
+                        x.OrgId == organizationId);
+
+                if (branch == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Branch does not belong to this organization."
+                    });
+                }
+
+                string branchName = branch.BranchName?.Trim() ?? "";
+
+                if (string.IsNullOrWhiteSpace(branchName))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Branch name is missing."
+                    });
+                }
+
+                // 6. Validate department against department master
+                var department = await _commonContext.Departments
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(d =>
+                        d.Id == request.DepartmentId &&
+                        d.OrgId == organizationId &&
+                        d.BranchId == request.BranchId);
+
+                if (department == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "Department does not belong to the selected organization and branch."
+                    });
+                }
+
+                // 7. Get configured approval levels using DepartmentId
+                var departmentConfig = await _context.DepartmentApprovalConfigs
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.OrganizationId == organizationId &&
+                        x.ModuleCode == moduleCode &&
+                        x.DepartmentId == request.DepartmentId &&
+                        x.Branch == branchName &&
+                        x.IsActive);
+
+                if (departmentConfig == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message =
+                            "Department approval configuration not found. Configure department approval levels first."
+                    });
+                }
+
+                if (request.TotalApprovalLevels != departmentConfig.TotalApprovalLevels)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "TotalApprovalLevels must match the department configuration.",
+                        configuredApprovalLevels = departmentConfig.TotalApprovalLevels
+                    });
+                }
+
+                // 8. Validate employee
+                // ==========================================
+                // 8. VALIDATE EMPLOYEE
+                // CompanyUsers.DepartmentId is a string (CSV)
+                // Example: "21,15,30"
+                // ==========================================
+
+                var employee = await _commonContext.CompanyUsers
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.EmpId == request.EmployeeId &&
+                        x.OrgId == organizationId &&
+                        x.BranchId == request.BranchId &&
+                        (x.Status == null ||
+                         x.Status.Trim().ToUpper() == "ACTIVE"));
+
+                if (employee == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Employee does not belong to the selected organization and branch, or is inactive."
+                    });
+                }
+
+                // Convert CSV DepartmentId string into integer list
+                var employeeDepartmentIds = (employee.DepartmentId ?? "")
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(id =>
+                    {
+                        return int.TryParse(id.Trim(), out int departmentId)
+                            ? departmentId
+                            : 0;
+                    })
+                    .Where(id => id > 0)
+                    .ToList();
+
+                // Validate selected department
+                if (!employeeDepartmentIds.Contains(request.DepartmentId))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Employee does not belong to the selected department.",
+                        employeeId = request.EmployeeId,
+                        selectedDepartmentId = request.DepartmentId,
+                        employeeDepartmentIds
+                    });
+                }
+
+                // 9. Validate approval levels
+                if (request.ApprovalLevels == null ||
+                    request.ApprovalLevels.Count != departmentConfig.TotalApprovalLevels)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "ApprovalLevels count must match the configured department approval levels."
+                    });
+                }
+
+                var orderedLevels = request.ApprovalLevels
+                    .OrderBy(x => x.ApprovalLevel)
+                    .ToList();
+
+                for (int i = 0; i < orderedLevels.Count; i++)
+                {
+                    var level = orderedLevels[i];
+
+                    if (level.ApprovalLevel != i + 1)
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "Approval levels must be sequential, starting from 1."
+                        });
+                    }
+
+                    if (!string.Equals(
+                            level.ApprovalRule,
+                            "AnyOne",
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "Currently, only the AnyOne approval rule is supported."
+                        });
+                    }
+
+                    if (level.ApproverEmployeeIds == null ||
+                        level.ApproverEmployeeIds.Count == 0)
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message =
+                                $"At least one approver is required for level {level.ApprovalLevel}."
+                        });
+                    }
+
+                    if (level.ApproverEmployeeIds.Any(id => id <= 0))
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message =
+                                $"Invalid approver ID in level {level.ApprovalLevel}."
+                        });
+                    }
+
+                    if (level.ApproverEmployeeIds.Distinct().Count() !=
+                        level.ApproverEmployeeIds.Count)
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message =
+                                $"Duplicate approvers are not allowed within level {level.ApprovalLevel}."
+                        });
+                    }
+                }
+
+                // 10. Validate approvers belong to this organization and are active
+                var approverIds = orderedLevels
+                    .SelectMany(x => x.ApproverEmployeeIds)
+                    .Distinct()
+                    .ToList();
+
+                var validApproverIds = await _commonContext.CompanyUsers
+                    .AsNoTracking()
+                    .Where(x =>
+                        x.OrgId == organizationId &&
+                        approverIds.Contains(x.EmpId) &&
+                        (x.Status == null ||
+                         x.Status.Trim().ToUpper() == "ACTIVE"))
+                    .Select(x => x.EmpId)
+                    .Distinct()
+                    .ToListAsync();
+
+                var invalidApproverIds = approverIds
+                    .Except(validApproverIds)
+                    .ToList();
+
+                if (invalidApproverIds.Count > 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message =
+                            "Some approvers do not belong to this organization or are inactive.",
+                        invalidApproverIds
+                    });
+                }
+
+                // 11. Save inside transaction
+                await using var transaction =
+                    await _context.Database.BeginTransactionAsync();
+
+                try
+                {
+                    var now = DateTime.UtcNow;
+
+                    var previousConfigs = await _context.EmployeeApprovalConfigs
+                        .Include(x => x.Approvers)
+                        .Where(x =>
+                            x.OrganizationId == organizationId &&
+                            x.DepartmentApprovalConfigId == departmentConfig.Id &&
+                            x.EmployeeId == request.EmployeeId &&
+                            x.IsActive)
+                        .ToListAsync();
+
+                    // Preserve history; deactivate previous configuration
+                    foreach (var previousConfig in previousConfigs)
+                    {
+                        previousConfig.IsActive = false;
+                        previousConfig.UpdatedDate = now;
+
+                        foreach (var previousApprover in previousConfig.Approvers)
+                        {
+                            previousApprover.IsActive = false;
+                            previousApprover.UpdatedDate = now;
+                        }
+                    }
+
+                    var newConfigs = new List<EmployeeApprovalConfig>();
+
+                    foreach (var level in orderedLevels)
+                    {
+                        var employeeApproval = new EmployeeApprovalConfig
+                        {
+                            OrganizationId = organizationId,
+                            DepartmentApprovalConfigId = departmentConfig.Id,
+                            EmployeeId = request.EmployeeId,
+                            ApprovalLevel = level.ApprovalLevel,
+                            ApprovalRule = "AnyOne",
+                            IsActive = true,
+                            CreatedDate = now
+                        };
+
+                        for (int i = 0; i < level.ApproverEmployeeIds.Count; i++)
+                        {
+                            employeeApproval.Approvers.Add(
+                                new EmployeeApprovalConfigApprover
+                                {
+                                    ApproverEmployeeId = level.ApproverEmployeeIds[i],
+                                    ApprovalOrder = i + 1,
+                                    IsActive = true,
+                                    CreatedDate = now
+                                });
+                        }
+
+                        newConfigs.Add(employeeApproval);
+                    }
+
+                    _context.EmployeeApprovalConfigs.AddRange(newConfigs);
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    return Ok(new
+                    {
+                        success = true,
+                        message = "Employee approval configuration saved successfully.",
+                        organizationId,
+                        departmentApprovalConfigId = departmentConfig.Id,
+                        moduleCode,
+                        branchId = request.BranchId,
+                        departmentId = request.DepartmentId,
+                        employeeId = request.EmployeeId,
+                        totalApprovalLevels = request.TotalApprovalLevels,
+                        savedLevels = newConfigs.Select(x => new
+                        {
+                            x.Id,
+                            x.ApprovalLevel,
+                            x.ApprovalRule,
+                            approvers = x.Approvers.Select(a => new
+                            {
+                                a.ApproverEmployeeId,
+                                a.ApprovalOrder
+                            })
+                        })
+                    });
+                }
+                catch
+                {
+                    await transaction.RollbackAsync();
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Unable to save employee approval configuration.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [Authorize]
+        [HttpGet("approval-setup/employee-config")]
+        public async Task<IActionResult> GetEmployeeApprovalConfig()
+        {
+            try
+            {
+                // 1. Get OrganizationId from JWT
+                var orgIdClaim =
+                    User.FindFirst("orgId")?.Value ??
+                    User.FindFirst("OrganizationId")?.Value;
+
+                if (!int.TryParse(orgIdClaim, out int organizationId) ||
+                    organizationId <= 0)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid organization ID."
+                    });
+                }
+
+                // 2. Role validation
+                var role =
+                    User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value ??
+                    User.FindFirst("role")?.Value;
+
+                bool isAdmin =
+                    string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(role, "Super Admin", StringComparison.OrdinalIgnoreCase);
+
+                if (!isAdmin)
+                {
+                    return StatusCode(403, new
+                    {
+                        success = false,
+                        message = "Only Admin or SuperAdmin can view approval configurations."
+                    });
+                }
+
+                // 3. Get active department approval configurations
+                // from Travel DB
+                var departmentConfigs = await _context.DepartmentApprovalConfigs
+                    .AsNoTracking()
+                    .Where(x =>
+                        x.OrganizationId == organizationId &&
+                        x.IsActive)
+                    .ToListAsync();
+
+                if (!departmentConfigs.Any())
+                {
+                    return Ok(new
+                    {
+                        success = true,
+                        organizationId,
+                        totalDepartments = 0,
+                        departments = new List<object>()
+                    });
+                }
+
+                var departmentConfigIds = departmentConfigs
+                    .Select(x => x.Id)
+                    .ToList();
+
+                // 4. Get active employee approval configurations
+                // from Travel DB
+                var employeeConfigs = await _context.EmployeeApprovalConfigs
+                    .AsNoTracking()
+                    .Include(x => x.Approvers)
+                    .Where(x =>
+                        x.OrganizationId == organizationId &&
+                        x.IsActive &&
+                        departmentConfigIds.Contains(x.DepartmentApprovalConfigId))
+                    .ToListAsync();
+
+                // 5. Get department names from Common DB
+                var departmentIds = departmentConfigs
+                    .Select(x => x.DepartmentId)
+                    .Distinct()
+                    .ToList();
+
+                var departments = await _commonContext.Departments
+                    .AsNoTracking()
+                    .Where(d =>
+                        d.OrgId == organizationId &&
+                        departmentIds.Contains(d.Id))
+                    .ToListAsync();
+
+                // 6. Get employee IDs from configurations
+                var employeeIds = employeeConfigs
+                    .Select(x => x.EmployeeId)
+                    .Concat(
+                        employeeConfigs
+                            .SelectMany(x => x.Approvers)
+                            .Select(a => a.ApproverEmployeeId))
+                    .Distinct()
+                    .ToList();
+
+                // 7. Get employee names from Common DB
+                var employees = await _commonContext.CompanyUsers
+                    .AsNoTracking()
+                    .Where(x =>
+                        x.OrgId == organizationId &&
+                        employeeIds.Contains(x.EmpId))
+                    .ToListAsync();
+
+                // 8. Build department-wise response
+                var result = departmentConfigs
+                    .Select(departmentConfig =>
+                    {
+                        var department = departments
+                            .FirstOrDefault(d =>
+                                d.Id == departmentConfig.DepartmentId);
+
+                        var configuredEmployees = employeeConfigs
+                            .Where(x =>
+                                x.DepartmentApprovalConfigId == departmentConfig.Id)
+                            .GroupBy(x => x.EmployeeId)
+                            .Select(employeeGroup =>
+                            {
+                                var employee = employees
+                                    .FirstOrDefault(e =>
+                                        e.EmpId == employeeGroup.Key);
+
+                                var levels = employeeGroup
+                                    .OrderBy(x => x.ApprovalLevel)
+                                    .Select(levelConfig => new
+                                    {
+                                        approvalConfigId = levelConfig.Id,
+                                        approvalLevel = levelConfig.ApprovalLevel,
+                                        approvalRule = levelConfig.ApprovalRule,
+
+                                        approvers = levelConfig.Approvers
+                                            .Where(a => a.IsActive)
+                                            .OrderBy(a => a.ApprovalOrder)
+                                            .Select(a =>
+                                            {
+                                                var approver = employees
+                                                    .FirstOrDefault(e =>
+                                                        e.EmpId == a.ApproverEmployeeId);
+
+                                                return new
+                                                {
+                                                    approverEmployeeId =
+                                                        a.ApproverEmployeeId,
+
+                                                    approverName =
+                                                        approver?.FullName,
+
+                                                    approverEmail =
+                                                        approver?.Email,
+
+                                                    approvalOrder =
+                                                        a.ApprovalOrder
+                                                };
+                                            })
+                                            .ToList()
+                                    })
+                                    .ToList();
+
+                                return new
+                                {
+                                    employeeId = employeeGroup.Key,
+                                    employeeName = employee?.FullName,
+                                    employeeEmail = employee?.Email,
+                                    approvalLevels = levels
+                                };
+                            })
+                            .ToList();
+
+                        return new
+                        {
+                            departmentApprovalConfigId = departmentConfig.Id,
+                            departmentId = departmentConfig.DepartmentId,
+                            departmentName = department?.DepartmentName,
+                            moduleCode = departmentConfig.ModuleCode,
+                            branch = departmentConfig.Branch,
+                            totalApprovalLevels =
+                                departmentConfig.TotalApprovalLevels,
+
+                            totalConfiguredEmployees =
+                                configuredEmployees.Count,
+
+                            employees = configuredEmployees
+                        };
+                    })
+                    .ToList();
+
+                // 9. Return response
+                return Ok(new
+                {
+                    success = true,
+                    organizationId,
+                    totalDepartments = result.Count,
+                    departments = result
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Unable to fetch employee approval configuration.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [Authorize]
+        [HttpGet("eligible-employees")]
+        public async Task<IActionResult> GetEligibleEmployees()
+        {
+            try
+            {
+                // 1. Get logged-in Employee ID from JWT
+                var empIdClaim = User.FindFirst("EmpId")?.Value;
+
+                if (!int.TryParse(empIdClaim, out int loggedInEmployeeId))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid employee token."
+                    });
+                }
+
+                // 2. Get Organization ID from JWT
+                var orgIdClaim = User.FindFirst("orgId")?.Value
+                                 ?? User.FindFirst("OrganizationId")?.Value;
+
+                if (!int.TryParse(orgIdClaim, out int organizationId))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Organization ID not found in token."
+                    });
+                }
+
+                // 3. Validate logged-in employee
+                var loggedInEmployee = await _commonContext.CompanyUsers
+                    .FirstOrDefaultAsync(x =>
+                        x.EmpId == loggedInEmployeeId &&
+                        x.OrgId == organizationId &&
+                        x.Status == "ACTIVE");
+
+                if (loggedInEmployee == null)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Employee not found or inactive."
+                    });
+                }
+
+                // 4. Get all active Task Manager department configurations
+                var departmentConfigs = await _context.DepartmentApprovalConfigs
+                    .Where(x =>
+                        x.OrganizationId == organizationId &&
+                        x.ModuleCode == "task_management" &&
+                        x.IsActive)
+                    .ToListAsync();
+
+                if (!departmentConfigs.Any())
+                {
+                    return Ok(new
+                    {
+                        success = true,
+                        canCreateTask = false,
+                        message = "No active Task Manager department configurations found.",
+                        departments = new List<object>()
+                    });
+                }
+
+                var departmentConfigIds = departmentConfigs
+                    .Select(x => x.Id)
+                    .ToList();
+
+                // 5. Get employee approval configurations
+                // Logged-in employee must be configured as an approver
+                var approvalConfigs = await _context.EmployeeApprovalConfigs
+                    .Include(x => x.Approvers)
+                    .Where(x =>
+                        x.OrganizationId == organizationId &&
+                        departmentConfigIds.Contains(x.DepartmentApprovalConfigId) &&
+                        x.IsActive &&
+                        x.Approvers.Any(a =>
+                            a.ApproverEmployeeId == loggedInEmployeeId &&
+                            a.IsActive))
+                    .ToListAsync();
+
+                if (!approvalConfigs.Any())
+                {
+                    return Ok(new
+                    {
+                        success = true,
+                        canCreateTask = false,
+                        message = "You are not configured as an approver for any Task Manager department.",
+                        departments = new List<object>()
+                    });
+                }
+
+                // 6. Get eligible employee IDs grouped by department configuration
+                var eligibleGroups = approvalConfigs
+                    .GroupBy(x => x.DepartmentApprovalConfigId)
+                    .ToList();
+
+                // 7. Get branch details
+                var branches = await _commonContext.Branches
+                    .Where(x => x.OrgId == organizationId)
+                    .ToListAsync();
+
+                var result = new List<object>();
+
+                // 8. Process each eligible department
+                foreach (var group in eligibleGroups)
+                {
+                    var departmentConfig = departmentConfigs
+                        .FirstOrDefault(x => x.Id == group.Key);
+
+                    if (departmentConfig == null)
+                        continue;
+
+                    // Find branch using configured branch name
+                    var branch = branches.FirstOrDefault(x =>
+                        x.BranchName.Trim().ToLower() ==
+                        departmentConfig.Branch.Trim().ToLower());
+
+                    if (branch == null)
+                        continue;
+
+                    var eligibleEmployeeIds = group
+                        .Select(x => x.EmployeeId)
+                        .Distinct()
+                        .ToList();
+
+                    // 9. Get employees from common database
+                    var commonEmployees = await _commonContext.CompanyUsers
+                        .Where(x =>
+                            eligibleEmployeeIds.Contains(x.EmpId) &&
+                            x.OrgId == organizationId &&
+                            x.BranchId == branch.BranchId &&
+                            x.Status == "ACTIVE")
+                        .ToListAsync();
+
+                    // 10. Filter employees belonging to configured department
+                    var employees = commonEmployees
+                        .Where(x =>
+                            !string.IsNullOrWhiteSpace(x.DepartmentId) &&
+                            x.DepartmentId
+                                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(id => id.Trim())
+                                .Contains(departmentConfig.DepartmentId.ToString()))
+                        .Select(x => new
+                        {
+                            employeeId = x.EmpId,
+                            empCode = x.EmpCode,
+                            employeeName = x.FullName
+                        })
+                        .ToList();
+
+                    if (!employees.Any())
+                        continue;
+
+                    result.Add(new
+                    {
+                        departmentConfigId = departmentConfig.Id,
+                        departmentId = departmentConfig.DepartmentId,
+                        branch = departmentConfig.Branch,
+                        totalApprovalLevels = departmentConfig.TotalApprovalLevels,
+                        employees
+                    });
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    canCreateTask = result.Any(),
+                    message = result.Any()
+                        ? "Eligible departments and employees retrieved successfully."
+                        : "No eligible employees found.",
+                    departments = result
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while retrieving eligible employees.",
+                    error = ex.Message
                 });
             }
         }
 
 
+
+        //-------------Task Manager Configurater _-----------//
+
+
+        //  [Authorize]
+        //  [HttpGet("task-manager/approval-levels")]
+        //  public async Task<IActionResult> GetTaskManagerApprovalLevels(
+        //[FromQuery] int departmentId)
+        //  {
+        //      try
+        //      {
+        //          int organizationId = GetOrganizationId();
+
+        //          if (departmentId <= 0)
+        //          {
+        //              return BadRequest(new
+        //              {
+        //                  message = "Valid DepartmentId is required."
+        //              });
+        //          }
+
+        //          var config = await _context.DepartmentApprovalConfigs
+        //              .Where(x =>
+        //                  x.OrganizationId == organizationId &&
+        //                  x.DepartmentId == departmentId &&
+        //                  x.ModuleCode == "task_management" &&
+        //                  x.IsActive)
+        //              .Select(x => new TaskManagerApprovalLevelsResponsedto
+        //              {
+        //                  ModuleCode = x.ModuleCode,
+        //                  DepartmentId = departmentId,
+        //                  TotalApprovalLevels = x.TotalApprovalLevels,
+        //                  Levels = Enumerable.Range(1, x.TotalApprovalLevels).ToList()
+        //              })
+        //              .FirstOrDefaultAsync();
+
+        //          if (config == null)
+        //          {
+        //              return NotFound(new
+        //              {
+        //                  message = "Approval configuration not found for this department."
+        //              });
+        //          }
+
+        //          return Ok(config);
+        //      }
+        //      catch (UnauthorizedAccessException ex)
+        //      {
+        //          return Unauthorized(new { message = ex.Message });
+        //      }
+        //      catch (Exception ex)
+        //      {
+        //          return StatusCode(500, new
+        //          {
+        //              message = "Unable to fetch approval levels.",
+        //              error = ex.Message
+        //          });
+        //      }
+        //  }
+
+        [Authorize]
+        [HttpGet("approval-setup/approval-levels")]
+        public async Task<IActionResult> GetApprovalLevels(
+    [FromQuery] string moduleCode,
+    [FromQuery] int branchId,
+    [FromQuery] int departmentId)
+        {
+            try
+            {
+                // 1. Get OrganizationId from JWT
+                int organizationId = GetOrganizationId();
+
+                // 2. Validate request
+                if (string.IsNullOrWhiteSpace(moduleCode) ||
+                    branchId <= 0 ||
+                    departmentId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "ModuleCode, BranchId and DepartmentId are required."
+                    });
+                }
+
+                moduleCode = moduleCode.Trim();
+
+                // 3. Validate branch belongs to organization
+                var branch = await _commonContext.Branches
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.BranchId == branchId &&
+                        x.OrgId == organizationId);
+
+                if (branch == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Branch does not belong to this organization."
+                    });
+                }
+
+                string branchName = branch.BranchName.Trim();
+
+                // 4. Validate department belongs to organization and branch
+                var department = await _commonContext.Departments
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.Id == departmentId &&
+                        x.OrgId == organizationId &&
+                        x.BranchId == branchId);
+
+                if (department == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Department does not belong to this organization and branch."
+                    });
+                }
+
+                // 5. Check module is enabled for organization
+                var moduleEnabled = await (
+                    from om in _commonContext.OrganizationModules
+                    join mm in _commonContext.ModuleMasters
+                        on om.ModuleCode equals mm.ModuleCode
+                    where om.OrgId == organizationId
+                          && om.IsActive
+                          && mm.IsActive
+                          && om.ModuleCode == moduleCode
+                    select om
+                ).AnyAsync();
+
+                if (!moduleEnabled)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "This module is not enabled for the organization."
+                    });
+                }
+
+                // 6. Fetch approval configuration
+                var config = await _context.DepartmentApprovalConfigs
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.OrganizationId == organizationId &&
+                        x.ModuleCode == moduleCode &&
+                        x.DepartmentId == departmentId &&
+                        x.Branch == branchName &&
+                        x.IsActive);
+
+                if (config == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Approval configuration not found for this department."
+                    });
+                }
+
+                // 7. Return approval levels
+                return Ok(new
+                {
+                    success = true,
+                    organizationId,
+                    moduleCode = config.ModuleCode,
+                    branchId,
+                    branchName,
+                    departmentId = config.DepartmentId,
+                    departmentName = department.DepartmentName,
+                    totalApprovalLevels = config.TotalApprovalLevels,
+
+                    levels = Enumerable
+                        .Range(1, config.TotalApprovalLevels)
+                        .ToList()
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Unable to fetch approval levels.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [Authorize]
+        [HttpGet("task-manager/department-employees")]
+        public async Task<IActionResult> GetTaskManagerDepartmentEmployees(
+      [FromQuery] int departmentId,
+      [FromQuery] int branchId)
+        {
+            try
+            {
+                int organizationId = GetOrganizationId();
+
+                if (departmentId <= 0 || branchId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        message = "Valid DepartmentId and BranchId are required."
+                    });
+                }
+
+                // Check Task Management module
+                bool moduleEnabled = await _commonContext.OrganizationModules
+                    .AnyAsync(x =>
+                        x.OrgId == organizationId &&
+                        x.ModuleCode == "task_management" &&
+                        x.IsActive);
+
+                if (!moduleEnabled)
+                {
+                    return BadRequest(new
+                    {
+                        message = "Task Management is not enabled for this organization."
+                    });
+                }
+
+                // Validate department
+                var department = await _commonContext.Departments
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.Id == departmentId &&
+                        x.OrgId == organizationId);
+
+                if (department == null)
+                {
+                    return NotFound(new
+                    {
+                        message = "Department not found."
+                    });
+                }
+
+                // Validate branch
+                var branch = await _commonContext.Branches
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.BranchId == branchId &&
+                        x.OrgId == organizationId);
+
+                if (branch == null)
+                {
+                    return NotFound(new
+                    {
+                        message = "Branch not found."
+                    });
+                }
+
+                // Get employees for the selected organization and branch
+                var employees = await _commonContext.CompanyUsers
+                    .AsNoTracking()
+                    .Where(x =>
+                        x.OrgId == organizationId &&
+                        x.BranchId == branchId)
+                    .Select(x => new
+                    {
+                        x.EmpId,
+                        x.EmpCode,
+                        x.FullName,
+                        x.Email,
+                        x.DepartmentId,
+                        x.Status
+                    })
+                    .ToListAsync();
+
+                // DepartmentId supports CSV values such as "21,15,30"
+                var result = employees
+                    .Where(x =>
+                        !string.IsNullOrWhiteSpace(x.DepartmentId) &&
+                        x.DepartmentId
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                            .Select(id => id.Trim())
+                            .Any(id =>
+                                int.TryParse(id, out int parsedId) &&
+                                parsedId == departmentId))
+                    .Where(x =>
+                        string.IsNullOrWhiteSpace(x.Status) ||
+                        x.Status.Equals(
+                            "Active",
+                            StringComparison.OrdinalIgnoreCase) ||
+                        x.Status.Equals(
+                            "1",
+                            StringComparison.OrdinalIgnoreCase))
+                    .Select(x => new
+                    {
+                        employeeId = x.EmpId,
+                        employeeCode = x.EmpCode,
+                        employeeName = x.FullName,
+                        email = x.Email,
+                        departmentId = departmentId,
+                        branchId = branchId
+                    })
+                    .OrderBy(x => x.employeeName)
+                    .ToList();
+
+                return Ok(new
+                {
+                    organizationId,
+                    departmentId,
+                    departmentName = department.DepartmentName,
+                    branchId,
+                    branchName = branch.BranchName,
+                    totalEmployees = result.Count,
+                    employees = result
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Unauthorized(new
+                {
+                    message = ex.Message
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "Unable to fetch department employees.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        [Authorize]
+        [HttpGet("task-manager/permissions")]
+        public async Task<IActionResult> GetTaskManagerPermissions(
+    [FromQuery] int departmentId,
+    [FromQuery] int branchId)
+        {
+            try
+            {
+                int organizationId = GetOrganizationId();
+
+                if (departmentId <= 0 || branchId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        message = "Valid DepartmentId and BranchId are required."
+                    });
+                }
+
+                // Check Task Management module
+                bool moduleEnabled = await _commonContext.OrganizationModules
+                    .AnyAsync(x =>
+                        x.OrgId == organizationId &&
+                        x.ModuleCode == "task_management" &&
+                        x.IsActive);
+
+                if (!moduleEnabled)
+                {
+                    return BadRequest(new
+                    {
+                        message = "Task Management is not enabled for this organization."
+                    });
+                }
+
+                // Validate department
+                var department = await _commonContext.Departments
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.Id == departmentId &&
+                        x.OrgId == organizationId);
+
+                if (department == null)
+                {
+                    return NotFound(new
+                    {
+                        message = "Department not found."
+                    });
+                }
+
+                // Validate branch
+                var branch = await _commonContext.Branches
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.BranchId == branchId &&
+                        x.OrgId == organizationId);
+
+                if (branch == null)
+                {
+                    return NotFound(new
+                    {
+                        message = "Branch not found."
+                    });
+                }
+
+                // Get active permissions for this organization,
+                // department and branch
+                var permissions = await _taskManagerDbContext.TaskCreatorPermissions
+                    .AsNoTracking()
+                    .Where(x =>
+                        x.OrganizationId == organizationId &&
+                        x.DepartmentId == departmentId &&
+                        x.BranchId == branchId &&
+                        x.IsActive)
+                    .Select(x => new
+                    {
+                        x.EmployeeId,
+                        x.PermissionLevel
+                    })
+                    .ToListAsync();
+
+                // Get employee details from the common database
+                var employeeIds = permissions
+                    .Select(x => x.EmployeeId)
+                    .Distinct()
+                    .ToList();
+
+                var employees = await _commonContext.CompanyUsers
+                    .AsNoTracking()
+                    .Where(x =>
+                        x.OrgId == organizationId &&
+                        employeeIds.Contains(x.EmpId))
+                    .Select(x => new
+                    {
+                        employeeId = x.EmpId,
+                        employeeCode = x.EmpCode,
+                        employeeName = x.FullName,
+                        email = x.Email
+                    })
+                    .ToListAsync();
+
+                var result = permissions
+                    .Join(
+                        employees,
+                        permission => permission.EmployeeId,
+                        employee => employee.employeeId,
+                        (permission, employee) => new
+                        {
+                            employeeId = employee.employeeId,
+                            employeeCode = employee.employeeCode,
+                            employeeName = employee.employeeName,
+                            email = employee.email,
+                            permissionLevel = permission.PermissionLevel
+                        })
+                    .OrderBy(x => x.permissionLevel)
+                    .ThenBy(x => x.employeeName)
+                    .ToList();
+
+                return Ok(new
+                {
+                    organizationId,
+                    departmentId,
+                    departmentName = department.DepartmentName,
+                    branchId,
+                    branchName = branch.BranchName,
+                    totalEmployees = result.Count,
+                    employees = result
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Unauthorized(new
+                {
+                    message = ex.Message
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "Unable to fetch Task Manager permissions.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        // [Authorize]
+        // [HttpPost("task-manager/permissions/save")]
+        // public async Task<IActionResult> SaveTaskManagerPermissions(
+        //[FromBody] TaskManagerPermissionSaveRequestDto request)
+        // {
+        //     using var transaction = await _taskManagerDbContext.Database
+        //         .BeginTransactionAsync();
+
+        //     try
+        //     {
+        //         int organizationId = GetOrganizationId();
+
+        //         // 1. Validate request
+        //         if (request == null ||
+        //             request.DepartmentId <= 0 ||
+        //             request.BranchId <= 0)
+        //         {
+        //             return BadRequest(new
+        //             {
+        //                 message = "Valid DepartmentId and BranchId are required."
+        //             });
+        //         }
+
+        //         if (request.Employees == null)
+        //         {
+        //             return BadRequest(new
+        //             {
+        //                 message = "Employees list is required. Send an empty list to remove all permissions in this department and branch."
+        //             });
+        //         }
+
+        //         // 2. Validate employee IDs and permission levels
+        //         if (request.Employees.Any(x =>
+        //             x.EmployeeId <= 0 || x.PermissionLevel <= 0))
+        //         {
+        //             return BadRequest(new
+        //             {
+        //                 message = "Invalid EmployeeId or PermissionLevel."
+        //             });
+        //         }
+
+        //         // Same employee can have different levels,
+        //         // but duplicate employee + level combinations are not allowed.
+        //         if (request.Employees
+        //             .GroupBy(x => new
+        //             {
+        //                 x.EmployeeId,
+        //                 x.PermissionLevel
+        //             })
+        //             .Any(g => g.Count() > 1))
+        //         {
+        //             return BadRequest(new
+        //             {
+        //                 message = "Duplicate employee and permission level combinations are not allowed."
+        //             });
+        //         }
+
+        //         // 3. Check Task Management module
+        //         bool moduleEnabled = await _commonContext.OrganizationModules
+        //             .AnyAsync(x =>
+        //                 x.OrgId == organizationId &&
+        //                 x.ModuleCode == "task_management" &&
+        //                 x.IsActive);
+
+        //         if (!moduleEnabled)
+        //         {
+        //             return BadRequest(new
+        //             {
+        //                 message = "Task Management is not enabled for this organization."
+        //             });
+        //         }
+
+        //         // 4. Validate department
+        //         var department = await _commonContext.Departments
+        //             .AsNoTracking()
+        //             .FirstOrDefaultAsync(x =>
+        //                 x.Id == request.DepartmentId &&
+        //                 x.OrgId == organizationId);
+
+        //         if (department == null)
+        //         {
+        //             return NotFound(new
+        //             {
+        //                 message = "Department not found."
+        //             });
+        //         }
+
+        //         // 5. Validate branch
+        //         var branch = await _commonContext.Branches
+        //             .AsNoTracking()
+        //             .FirstOrDefaultAsync(x =>
+        //                 x.BranchId == request.BranchId &&
+        //                 x.OrgId == organizationId);
+
+        //         if (branch == null)
+        //         {
+        //             return NotFound(new
+        //             {
+        //                 message = "Branch not found."
+        //             });
+        //         }
+
+        //         // 6. Get configured approval levels
+        //         var config = await _context.DepartmentApprovalConfigs
+        //             .AsNoTracking()
+        //             .Where(x =>
+        //                 x.OrganizationId == organizationId &&
+        //                 x.DepartmentId == request.DepartmentId &&
+        //                 x.ModuleCode == "task_management" &&
+        //                 x.IsActive)
+        //             .Select(x => new
+        //             {
+        //                 x.TotalApprovalLevels
+        //             })
+        //             .FirstOrDefaultAsync();
+
+        //         if (config == null || config.TotalApprovalLevels <= 0)
+        //         {
+        //             return BadRequest(new
+        //             {
+        //                 message = "Configure approval levels for this department first."
+        //             });
+        //         }
+
+        //         // 7. Validate selected approval levels
+        //         if (request.Employees.Any(x =>
+        //             x.PermissionLevel > config.TotalApprovalLevels))
+        //         {
+        //             return BadRequest(new
+        //             {
+        //                 message = $"PermissionLevel must be between 1 and {config.TotalApprovalLevels}."
+        //             });
+        //         }
+
+        //         // 8. Get selected employee IDs
+        //         var employeeIds = request.Employees
+        //             .Select(x => x.EmployeeId)
+        //             .Distinct()
+        //             .ToList();
+
+        //         // 9. Validate selected employees
+        //         var employees = await _commonContext.CompanyUsers
+        //             .AsNoTracking()
+        //             .Where(x =>
+        //                 x.OrgId == organizationId &&
+        //                 employeeIds.Contains(x.EmpId) &&
+        //                 x.BranchId == request.BranchId)
+        //             .Select(x => new
+        //             {
+        //                 x.EmpId,
+        //                 x.DepartmentId,
+        //                 x.Status
+        //             })
+        //             .ToListAsync();
+
+        //         if (employees.Count != employeeIds.Count)
+        //         {
+        //             return BadRequest(new
+        //             {
+        //                 message = "One or more employees do not belong to the selected organization or branch."
+        //             });
+        //         }
+
+        //         var invalidEmployeeIds = employees
+        //             .Where(x =>
+        //                 string.IsNullOrWhiteSpace(x.DepartmentId) ||
+        //                 !x.DepartmentId
+        //                     .Split(',', StringSplitOptions.RemoveEmptyEntries)0000000000000
+        //                     .Select(id => id.Trim())
+        //                     .Any(id =>
+        //                         int.TryParse(id, out int parsedId) &&
+        //                         parsedId == request.DepartmentId) ||
+        //                 (!string.IsNullOrWhiteSpace(x.Status) &&
+        //                  !x.Status.Equals(
+        //                      "Active",
+        //                      StringComparison.OrdinalIgnoreCase) &&
+        //                  !x.Status.Equals(
+        //                      "1",
+        //                      StringComparison.OrdinalIgnoreCase)))
+        //             .Select(x => x.EmpId)
+        //             .ToList();
+
+        //         if (invalidEmployeeIds.Any())
+        //         {
+        //             return BadRequest(new
+        //             {
+        //                 message = "Some employees are inactive or do not belong to the selected department.",
+        //                 employeeIds = invalidEmployeeIds
+        //             });
+        //         }
+
+        //         // 10. Load existing active permissions for this exact scope.
+        //         // Other organizations, departments and branches are not affected.
+        //         var existingPermissions =
+        //             await _taskManagerDbContext.TaskCreatorPermissions
+        //                 .Where(x =>
+        //                     x.OrganizationId == organizationId &&
+        //                     x.DepartmentId == request.DepartmentId &&
+        //                     x.BranchId == request.BranchId &&
+        //                     x.IsActive)
+        //                 .ToListAsync();
+
+        //         var now = DateTime.UtcNow;
+
+        //         // 11. Add or update selected employee + level combinations
+        //         foreach (var selected in request.Employees)
+        //         {
+        //             var existing = existingPermissions.FirstOrDefault(x =>
+        //                 x.EmployeeId == selected.EmployeeId &&
+        //                 x.PermissionLevel == selected.PermissionLevel);
+
+        //             if (existing != null)
+        //             {
+        //                 existing.IsActive = true;
+        //                 existing.UpdatedAt = now;
+        //             }
+        //             else
+        //             {
+        //                 // If an inactive matching record exists, reactivate it.
+        //                 var inactiveExisting =
+        //                     await _taskManagerDbContext.TaskCreatorPermissions
+        //                         .FirstOrDefaultAsync(x =>
+        //                             x.OrganizationId == organizationId &&
+        //                             x.DepartmentId == request.DepartmentId &&
+        //                             x.BranchId == request.BranchId &&
+        //                             x.EmployeeId == selected.EmployeeId &&
+        //                             x.PermissionLevel == selected.PermissionLevel &&
+        //                             !x.IsActive);
+
+        //                 if (inactiveExisting != null)
+        //                 {
+        //                     inactiveExisting.IsActive = true;
+        //                     inactiveExisting.UpdatedAt = now;
+        //                 }
+        //                 else
+        //                 {
+        //                     _taskManagerDbContext.TaskCreatorPermissions.Add(
+        //                         new TaskCreatorPermission
+        //                         {
+        //                             OrganizationId = organizationId,
+        //                             DepartmentId = request.DepartmentId,
+        //                             BranchId = request.BranchId,
+        //                             EmployeeId = selected.EmployeeId,
+        //                             PermissionLevel = selected.PermissionLevel,
+        //                             IsActive = true,
+        //                             CreatedAt = now
+        //                         });
+        //                 }
+        //             }
+        //         }
+
+        //         // 12. Deactivate permissions removed from the submitted selection.
+        //         // Compare EmployeeId + PermissionLevel so the same employee
+        //         // can retain another approval level.
+        //         var selectedPairs = request.Employees
+        //             .Select(x => new
+        //             {
+        //                 x.EmployeeId,
+        //                 x.PermissionLevel
+        //             })
+        //             .ToList();
+
+        //         foreach (var existing in existingPermissions)
+        //         {
+        //             bool stillSelected = selectedPairs.Any(x =>
+        //                 x.EmployeeId == existing.EmployeeId &&
+        //                 x.PermissionLevel == existing.PermissionLevel);
+
+        //             if (!stillSelected)
+        //             {
+        //                 existing.IsActive = false;
+        //                 existing.UpdatedAt = now;
+        //             }
+        //         }
+
+        //         // 13. Save all changes
+        //         await _taskManagerDbContext.SaveChangesAsync();
+        //         await transaction.CommitAsync();
+
+        //         return Ok(new
+        //         {
+        //             message = "Task Manager permissions saved successfully.",
+        //             organizationId,
+        //             departmentId = request.DepartmentId,
+        //             branchId = request.BranchId,
+        //             totalApprovalLevels = config.TotalApprovalLevels,
+        //             savedPermissions = request.Employees.Count,
+        //             activePermissions = request.Employees.Count,
+        //             removedPermissions = existingPermissions.Count(x =>
+        //                 !x.IsActive)
+        //         });
+        //     }
+        //     catch (UnauthorizedAccessException ex)
+        //     {
+        //         await transaction.RollbackAsync();
+
+        //         return Unauthorized(new
+        //         {
+        //             message = ex.Message
+        //         });
+        //     }
+        //     catch (Exception ex)
+        //     {
+        //         await transaction.RollbackAsync();
+
+        //         return StatusCode(500, new
+        //         {
+        //             message = "Unable to save Task Manager permissions.",
+        //             error = ex.Message
+        //         });
+        //     }
+        // }
+        [Authorize]
+        [HttpGet("approval-setup/download-excel")]
+        public async Task<IActionResult> DownloadApprovalExcel(
+            [FromQuery] string moduleCode,
+            [FromQuery] int branchId,
+            [FromQuery] int departmentId)
+        {
+            try
+            {
+                var orgClaim = User.FindFirst("orgId")?.Value
+                            ?? User.FindFirst("OrganizationId")?.Value;
+
+                if (!int.TryParse(orgClaim, out int organizationId))
+                    return Unauthorized("OrganizationId missing in token.");
+
+                if (string.IsNullOrWhiteSpace(moduleCode))
+                    return BadRequest("ModuleCode is required.");
+
+                var branch = await _commonContext.Branches
+                    .FirstOrDefaultAsync(x =>
+                        x.BranchId == branchId &&
+                        x.OrgId == organizationId);
+
+                if (branch == null)
+                    return BadRequest("Branch not found.");
+
+                var department = await _commonContext.Departments
+                    .FirstOrDefaultAsync(x =>
+                        x.Id == departmentId &&
+                        x.OrgId == organizationId);
+
+                if (department == null)
+                    return BadRequest("Department not found.");
+
+                var departmentConfig =
+                    await _context.DepartmentApprovalConfigs
+                        .FirstOrDefaultAsync(x =>
+                            x.OrganizationId == organizationId &&
+                            x.ModuleCode == moduleCode &&
+                            x.Branch == branch.BranchName &&
+                            x.DepartmentId == departmentId &&
+                            x.IsActive);
+
+                if (departmentConfig == null)
+                    return BadRequest("Department approval configuration not found.");
+
+                int totalLevels = departmentConfig.TotalApprovalLevels;
+
+                if (totalLevels <= 0)
+                    return BadRequest("Approval levels are not configured.");
+
+                // Load active employees for organization + branch
+                var allEmployees = await _commonContext.CompanyUsers
+                    .Where(x =>
+                        x.OrgId == organizationId &&
+                        x.BranchId == branchId &&
+                        x.Status.ToUpper() == "ACTIVE")
+                    .ToListAsync();
+
+                // DepartmentId is CSV format: "11,12,13"
+                var employees = allEmployees
+                    .Where(x =>
+                        !string.IsNullOrWhiteSpace(x.DepartmentId) &&
+                        x.DepartmentId
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                            .Select(d => d.Trim())
+                            .Contains(departmentId.ToString()))
+                    .OrderBy(x => x.FullName)
+                    .ToList();
+
+                if (!employees.Any())
+                    return BadRequest("No employees found in selected department.");
+
+                var existingConfigs =
+                    await _context.EmployeeApprovalConfigs
+                        .Include(x => x.Approvers)
+                        .Where(x =>
+                            x.OrganizationId == organizationId &&
+                            x.DepartmentApprovalConfigId == departmentConfig.Id &&
+                            x.IsActive)
+                        .ToListAsync();
+
+                // All valid approvers from same organization and branch
+                var approverEmployees = allEmployees
+                    .Where(x => !string.IsNullOrWhiteSpace(x.EmpCode))
+                    .ToList();
+
+                var approverNames = approverEmployees
+                    .Select(x => $"{x.FullName} ({x.EmpCode})")
+                    .Distinct()
+                    .OrderBy(x => x)
+                    .ToList();
+
+                // Calculate number of existing approvers per level
+                var columnsPerLevel = new Dictionary<int, int>();
+
+                for (int level = 1; level <= totalLevels; level++)
+                {
+                    int maxApprovers = employees
+                        .Select(employee =>
+                            existingConfigs
+                                .Where(x =>
+                                    x.EmployeeId == employee.EmpId &&
+                                    x.ApprovalLevel == level)
+                                .SelectMany(x => x.Approvers)
+                                .Count(a => a.IsActive))
+                        .DefaultIfEmpty(0)
+                        .Max();
+
+                    columnsPerLevel[level] = Math.Max(1, maxApprovers);
+                }
+
+                using var workbook = new XLWorkbook();
+
+                var ws = workbook.Worksheets.Add("Approval Configuration");
+
+                int totalColumns = 1 + columnsPerLevel.Values.Sum();
+
+                // Title
+                ws.Range(1, 1, 1, totalColumns).Merge();
+
+                ws.Cell(1, 1).Value = "EMPLOYEE APPROVAL CONFIGURATION";
+
+                ws.Cell(1, 1).Style.Font.Bold = true;
+                ws.Cell(1, 1).Style.Font.FontSize = 16;
+                ws.Cell(1, 1).Style.Font.FontColor = XLColor.White;
+                ws.Cell(1, 1).Style.Fill.BackgroundColor =
+                    XLColor.FromHtml("#17365D");
+
+                ws.Row(1).Height = 30;
+
+                // Metadata
+                ws.Cell(3, 1).Value = "Module";
+                ws.Cell(3, 2).Value = moduleCode;
+
+                ws.Cell(4, 1).Value = "Branch";
+                ws.Cell(4, 2).Value = branch.BranchName;
+
+                ws.Cell(5, 1).Value = "Department";
+                ws.Cell(5, 2).Value = department.DepartmentName;
+
+                ws.Cell(6, 1).Value = "Approval Levels";
+                ws.Cell(6, 2).Value = totalLevels;
+
+                ws.Range("A3:A6").Style.Font.Bold = true;
+                ws.Range("A3:A6").Style.Fill.BackgroundColor =
+                    XLColor.FromHtml("#D9EAF7");
+
+                // Instruction
+                ws.Range(7, 1, 7, totalColumns).Merge();
+
+                ws.Cell(7, 1).Value =
+                    "NOTE: Select approver from dropdown or manually enter " +
+                    "Full Name (EmployeeCode), e.g. Rajesh (EMP-004). " +
+                    "For multiple approvers, add another column and use " +
+                    "the same Level header, e.g. Level 1.";
+
+                ws.Cell(7, 1).Style.Font.Italic = true;
+                ws.Cell(7, 1).Style.Font.FontColor = XLColor.Blue;
+                ws.Cell(7, 1).Style.Alignment.WrapText = true;
+
+                // Headers
+                int column = 1;
+
+                ws.Cell(8, column++).Value = "Employee";
+
+                var levelColumns = new Dictionary<int, List<int>>();
+
+                for (int level = 1; level <= totalLevels; level++)
+                {
+                    levelColumns[level] = new List<int>();
+
+                    for (int i = 0; i < columnsPerLevel[level]; i++)
+                    {
+                        ws.Cell(8, column).Value = $"Level {level}";
+
+                        levelColumns[level].Add(column);
+
+                        column++;
+                    }
+                }
+
+                // Header styling
+                ws.Range(8, 1, 8, totalColumns).Style.Font.Bold = true;
+                ws.Range(8, 1, 8, totalColumns).Style.Font.FontColor =
+                    XLColor.White;
+
+                ws.Range(8, 1, 8, totalColumns).Style.Fill.BackgroundColor =
+                    XLColor.FromHtml("#17365D");
+
+                // Employees and existing approvers
+                int row = 9;
+
+                foreach (var employee in employees)
+                {
+                    ws.Cell(row, 1).Value =
+                        $"{employee.FullName} ({employee.EmpCode})";
+
+                    for (int level = 1; level <= totalLevels; level++)
+                    {
+                        var config = existingConfigs.FirstOrDefault(x =>
+                            x.EmployeeId == employee.EmpId &&
+                            x.ApprovalLevel == level &&
+                            x.IsActive);
+
+                        if (config == null)
+                            continue;
+
+                        var approvers = config.Approvers
+                            .Where(x => x.IsActive)
+                            .OrderBy(x => x.ApprovalOrder)
+                            .ToList();
+
+                        for (int i = 0; i < approvers.Count; i++)
+                        {
+                            var approver = approverEmployees.FirstOrDefault(x =>
+                                x.EmpId == approvers[i].ApproverEmployeeId);
+
+                            if (approver == null)
+                                continue;
+
+                            if (i < levelColumns[level].Count)
+                            {
+                                int approverColumn = levelColumns[level][i];
+
+                                ws.Cell(row, approverColumn).Value =
+                                    $"{approver.FullName} ({approver.EmpCode})";
+                            }
+                        }
+                    }
+
+                    row++;
+                }
+
+                int lastEmployeeRow = row - 1;
+
+                // Dropdown worksheet
+                var listSheet = workbook.Worksheets.Add("ApproverList");
+
+                for (int i = 0; i < approverNames.Count; i++)
+                {
+                    listSheet.Cell(i + 1, 1).Value = approverNames[i];
+                }
+
+                if (approverNames.Count > 0)
+                {
+                    workbook.NamedRanges.Add(
+                        "ApproverList",
+                        listSheet.Range(1, 1, approverNames.Count, 1));
+                }
+
+                listSheet.Hide();
+
+                // --------------------------------------------------
+                // DROPDOWN VALIDATION FOR EXISTING + FUTURE COLUMNS
+                // B:AZ columns, rows 9:1000
+                // --------------------------------------------------
+
+                int firstApproverColumn = 2;
+                int lastApproverColumn = 52; // AZ
+                int firstDataRow = 9;
+                int lastValidationRow = 1000;
+
+                if (approverNames.Count > 0)
+                {
+                    for (int col = firstApproverColumn;
+                         col <= lastApproverColumn;
+                         col++)
+                    {
+                        var validationRange = ws.Range(
+                            firstDataRow,
+                            col,
+                            lastValidationRow,
+                            col);
+
+                        var validation =
+                            validationRange.CreateDataValidation();
+
+                        validation.List("=ApproverList");
+
+                        validation.IgnoreBlanks = true;
+                        validation.InCellDropdown = true;
+
+                        // Manual typing is permitted
+                        validation.ShowErrorMessage = false;
+                    }
+                }
+
+                // Formatting
+                ws.Column(1).Width = 35;
+
+                for (int col = 2; col <= lastApproverColumn; col++)
+                {
+                    ws.Column(col).Width = 30;
+                }
+
+                ws.Range(9, 1, lastEmployeeRow, totalColumns)
+                    .Style.Alignment.Vertical =
+                    XLAlignmentVerticalValues.Center;
+
+                ws.Range(9, 1, lastEmployeeRow, totalColumns)
+                    .Style.Alignment.WrapText = true;
+
+                ws.Range(8, 1, lastEmployeeRow, totalColumns)
+                    .SetAutoFilter();
+
+                ws.SheetView.FreezeRows(8);
+
+                // No worksheet protection
+                // Extra columns, rows, header editing and manual input allowed.
+
+                using var stream = new MemoryStream();
+
+                workbook.SaveAs(stream);
+
+                stream.Position = 0;
+
+                return File(
+                    stream.ToArray(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    $"Approval_Config_{moduleCode}_{departmentId}.xlsx");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error generating approval Excel.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        [Authorize]
+        [HttpPost("approval-setup/upload-excel")]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> UploadApprovalExcel(
+     [FromQuery] string moduleCode,
+     [FromQuery] int branchId,
+     [FromQuery] int departmentId,
+     IFormFile file)
+        {
+            using var transaction =
+                await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                // ==========================================
+                // 1. ORGANIZATION ID FROM JWT
+                // ==========================================
+
+                var organizationClaim =
+                    User.FindFirst("orgId")?.Value ??
+                    User.FindFirst("OrganizationId")?.Value;
+
+                if (!int.TryParse(organizationClaim, out int organizationId))
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "OrganizationId not found in token."
+                    });
+                }
+
+                // ==========================================
+                // 2. VALIDATE EXCEL FILE
+                // ==========================================
+
+                if (file == null || file.Length == 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Please upload Excel file."
+                    });
+                }
+
+                if (!Path.GetExtension(file.FileName)
+                    .Equals(".xlsx", StringComparison.OrdinalIgnoreCase))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Only .xlsx files are allowed."
+                    });
+                }
+
+                // ==========================================
+                // 3. GET DEPARTMENT APPROVAL CONFIGURATION
+                // ==========================================
+
+                var departmentConfig =
+                    await _context.DepartmentApprovalConfigs
+                        .FirstOrDefaultAsync(x =>
+                            x.OrganizationId == organizationId &&
+                            x.ModuleCode == moduleCode &&
+                            x.DepartmentId == departmentId &&
+                            x.IsActive);
+
+                if (departmentConfig == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Department approval configuration not found."
+                    });
+                }
+
+                if (departmentConfig.TotalApprovalLevels <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Approval levels are not configured."
+                    });
+                }
+
+                // ==========================================
+                // 4. VALIDATE BRANCH
+                // ==========================================
+
+                var branch = await _commonContext.Branches
+                    .FirstOrDefaultAsync(x =>
+                        x.BranchId == branchId &&
+                        x.OrgId == organizationId);
+
+                if (branch == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Invalid branch."
+                    });
+                }
+
+                if (!string.Equals(
+                        departmentConfig.Branch?.Trim(),
+                        branch.BranchName?.Trim(),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Branch does not match department approval configuration."
+                    });
+                }
+
+                // ==========================================
+                // 5. GET ACTIVE EMPLOYEES FROM COMMON DB
+                // ==========================================
+
+                var allEmployees = await _commonContext.CompanyUsers
+                    .Where(x =>
+                        x.OrgId == organizationId &&
+                        x.BranchId == branchId &&
+                        x.Status == "ACTIVE")
+                    .ToListAsync();
+
+                // DepartmentId is CSV string:
+                // Example: "11,12,15"
+
+                var departmentEmployees = allEmployees
+                    .Where(x =>
+                        !string.IsNullOrWhiteSpace(x.DepartmentId) &&
+                        x.DepartmentId
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                            .Select(d => d.Trim())
+                            .Contains(departmentId.ToString()))
+                    .ToList();
+
+                if (!departmentEmployees.Any())
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "No active employees found in selected department."
+                    });
+                }
+
+                // ==========================================
+                // 6. EMPLOYEE DICTIONARY
+                // EmpCode is STRING
+                // ==========================================
+
+                var employeeDictionary = departmentEmployees
+                    .Where(x => !string.IsNullOrWhiteSpace(x.EmpCode))
+                    .GroupBy(x => x.EmpCode.Trim().ToUpper())
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.First()
+                    );
+
+                // ==========================================
+                // 7. READ EXCEL
+                // ==========================================
+
+                using var memoryStream = new MemoryStream();
+
+                await file.CopyToAsync(memoryStream);
+
+                memoryStream.Position = 0;
+
+                using var workbook = new XLWorkbook(memoryStream);
+
+                var worksheet = workbook.Worksheets.FirstOrDefault();
+
+                if (worksheet == null)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Excel worksheet not found."
+                    });
+                }
+
+                // Excel format:
+                // Header row = 8
+                // Employee data starts = 9
+
+                const int headerRow = 8;
+                const int dataStartRow = 9;
+
+                int lastColumn =
+                    worksheet.LastColumnUsed()?.ColumnNumber() ?? 0;
+
+                int lastRow =
+                    worksheet.LastRowUsed()?.RowNumber() ?? 0;
+
+                if (lastColumn < 2 || lastRow < dataStartRow)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Excel data is empty or invalid."
+                    });
+                }
+
+                // ==========================================
+                // 8. VALIDATE EMPLOYEE COLUMN
+                // ==========================================
+
+                string employeeHeader =
+                    worksheet.Cell(headerRow, 1).GetString().Trim();
+
+                if (!employeeHeader.Equals(
+                        "Employee",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Excel column A header must be Employee."
+                    });
+                }
+
+                // ==========================================
+                // 9. FIND LEVEL COLUMNS
+                // Supports:
+                // Level 1 | Level 1 | Level 2 | Level 3
+                // ==========================================
+
+                var levelColumns = new List<(int Column, int Level)>();
+
+                for (int col = 2; col <= lastColumn; col++)
+                {
+                    string header =
+                        worksheet.Cell(headerRow, col).GetString().Trim();
+
+                    if (string.IsNullOrWhiteSpace(header))
+                        continue;
+
+                    // Manual parsing instead of Regex
+                    string lowerHeader = header.ToLower();
+
+                    int levelPosition = lowerHeader.IndexOf("level");
+
+                    if (levelPosition < 0)
+                        continue;
+
+                    string remaining =
+                        lowerHeader.Substring(levelPosition + 5).Trim();
+
+                    string levelNumber = "";
+
+                    foreach (char character in remaining)
+                    {
+                        if (char.IsDigit(character))
+                        {
+                            levelNumber += character;
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+
+                    if (!int.TryParse(levelNumber, out int level))
+                        continue;
+
+                    if (level < 1 ||
+                        level > departmentConfig.TotalApprovalLevels)
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = $"Invalid approval level '{header}'."
+                        });
+                    }
+
+                    levelColumns.Add((col, level));
+                }
+
+                if (!levelColumns.Any())
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "No approval level columns found."
+                    });
+                }
+
+                // ==========================================
+                // 10. PREPARE APPROVAL DATA
+                // EmployeeId -> Level -> Approver EmployeeIds
+                // ==========================================
+
+                var approvalData =
+                    new Dictionary<int, Dictionary<int, HashSet<int>>>();
+
+                var validationErrors = new List<string>();
+
+                var processedEmployees = new HashSet<int>();
+
+                // ==========================================
+                // 11. READ EMPLOYEE ROWS
+                // ==========================================
+
+                for (int row = dataStartRow; row <= lastRow; row++)
+                {
+                    string employeeCell =
+                        worksheet.Cell(row, 1).GetString().Trim();
+
+                    if (string.IsNullOrWhiteSpace(employeeCell))
+                        continue;
+
+                    // Extract EmpCode from:
+                    // Employee Name (EMP001)
+
+                    string employeeCode = string.Empty;
+
+                    int employeeOpenBracket = employeeCell.LastIndexOf('(');
+                    int employeeCloseBracket = employeeCell.LastIndexOf(')');
+
+                    if (employeeOpenBracket >= 0 &&
+                        employeeCloseBracket > employeeOpenBracket)
+                    {
+                        employeeCode = employeeCell
+                            .Substring(
+                                employeeOpenBracket + 1,
+                                employeeCloseBracket - employeeOpenBracket - 1)
+                            .Trim();
+                    }
+
+                    if (string.IsNullOrWhiteSpace(employeeCode))
+                    {
+                        validationErrors.Add(
+                            $"Row {row}: Invalid employee format '{employeeCell}'. Expected Name (EmpCode).");
+
+                        continue;
+                    }
+
+                    string employeeKey =
+                        employeeCode.Trim().ToUpper();
+
+                    // ======================================
+                    // 12. VALIDATE EMPLOYEE
+                    // ======================================
+
+                    if (!employeeDictionary.TryGetValue(
+                            employeeKey,
+                            out var employee))
+                    {
+                        validationErrors.Add(
+                            $"Row {row}: Employee '{employeeCell}' not found in selected Organization / Branch / Department.");
+
+                        continue;
+                    }
+
+                    if (!processedEmployees.Add(employee.EmpId))
+                    {
+                        validationErrors.Add(
+                            $"Row {row}: Duplicate employee '{employeeCell}'.");
+
+                        continue;
+                    }
+
+                    if (!approvalData.ContainsKey(employee.EmpId))
+                    {
+                        approvalData[employee.EmpId] =
+                            new Dictionary<int, HashSet<int>>();
+                    }
+
+                    // ======================================
+                    // 13. VALIDATE APPROVERS
+                    // ======================================
+
+                    foreach (var levelColumn in levelColumns)
+                    {
+                        int level = levelColumn.Level;
+
+                        string approverCell =
+                            worksheet.Cell(row, levelColumn.Column)
+                                .GetString()
+                                .Trim();
+
+                        // Blank approver allowed
+                        if (string.IsNullOrWhiteSpace(approverCell))
+                            continue;
+
+                        string approverCode = string.Empty;
+
+                        int approverOpenBracket = approverCell.LastIndexOf('(');
+                        int approverCloseBracket = approverCell.LastIndexOf(')');
+
+                        if (approverOpenBracket >= 0 &&
+                            approverCloseBracket > approverOpenBracket)
+                        {
+                            approverCode = approverCell
+                                .Substring(
+                                    approverOpenBracket + 1,
+                                    approverCloseBracket - approverOpenBracket - 1)
+                                .Trim();
+                        }
+
+                        if (string.IsNullOrWhiteSpace(approverCode))
+                        {
+                            validationErrors.Add(
+                                $"Row {row}, Level {level}: Invalid approver format '{approverCell}'.");
+
+                            continue;
+                        }
+
+                        string approverKey =
+                            approverCode.Trim().ToUpper();
+
+                        // ==================================
+                        // 14. APPROVER MUST EXIST IN DEPARTMENT
+                        // ==================================
+
+                        if (!employeeDictionary.TryGetValue(
+                                approverKey,
+                                out var approver))
+                        {
+                            validationErrors.Add(
+                                $"Row {row}, Level {level}: Approver '{approverCell}' is not an active employee in the selected department.");
+
+                            continue;
+                        }
+
+                        // ==================================
+                        // 15. VALIDATE FULL NAME + CODE
+                        // ==================================
+
+                        string expectedApproverName =
+                            $"{approver.FullName.Trim()} ({approver.EmpCode.Trim()})";
+
+                        if (!string.Equals(
+                                approverCell.Trim(),
+                                expectedApproverName,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            validationErrors.Add(
+                                $"Row {row}, Level {level}: Name mismatch. Expected '{expectedApproverName}'.");
+
+                            continue;
+                        }
+
+                        // ==================================
+                        // 16. SELF APPROVAL NOT ALLOWED
+                        // ==================================
+
+                        if (employee.EmpId == approver.EmpId)
+                        {
+                            validationErrors.Add(
+                                $"Row {row}, Level {level}: Employee cannot be his own approver.");
+
+                            continue;
+                        }
+
+                        // ==================================
+                        // 17. MULTIPLE APPROVERS PER LEVEL
+                        // ==================================
+
+                        if (!approvalData[employee.EmpId]
+                            .ContainsKey(level))
+                        {
+                            approvalData[employee.EmpId][level] =
+                                new HashSet<int>();
+                        }
+
+                        approvalData[employee.EmpId][level]
+                            .Add(approver.EmpId);
+                    }
+                }
+
+                // ==========================================
+                // 18. VALIDATION FAILED - DO NOT SAVE
+                // ==========================================
+
+                if (validationErrors.Any())
+                {
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Excel validation failed. No data was saved.",
+                        errors = validationErrors
+                    });
+                }
+
+                if (!approvalData.Any())
+                {
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "No valid approval configuration found."
+                    });
+                }
+
+                // ==========================================
+                // 19. DEACTIVATE OLD APPROVAL CONFIGURATION
+                // ==========================================
+
+                var existingConfigs =
+                    await _context.EmployeeApprovalConfigs
+                        .Where(x =>
+                            x.OrganizationId == organizationId &&
+                            x.DepartmentApprovalConfigId == departmentConfig.Id &&
+                            x.IsActive)
+                        .ToListAsync();
+
+                foreach (var existingConfig in existingConfigs)
+                {
+                    existingConfig.IsActive = false;
+                    existingConfig.UpdatedDate = DateTime.UtcNow;
+
+                    var existingApprovers =
+                        await _context.EmployeeApprovalConfigApprovers
+                            .Where(x =>
+                                x.EmployeeApprovalConfigId == existingConfig.Id &&
+                                x.IsActive)
+                            .ToListAsync();
+
+                    foreach (var existingApprover in existingApprovers)
+                    {
+                        existingApprover.IsActive = false;
+                        existingApprover.UpdatedDate = DateTime.UtcNow;
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+
+                // ==========================================
+                // 20. INSERT NEW APPROVAL CONFIGURATION
+                // ==========================================
+
+                foreach (var employeeData in approvalData)
+                {
+                    int employeeId = employeeData.Key;
+
+                    foreach (var levelData in employeeData.Value)
+                    {
+                        int approvalLevel = levelData.Key;
+
+                        var approverIds =
+                            levelData.Value.ToList();
+
+                        if (!approverIds.Any())
+                            continue;
+
+                        var employeeApprovalConfig =
+                            new EmployeeApprovalConfig
+                            {
+                                OrganizationId = organizationId,
+
+                                DepartmentApprovalConfigId =
+                                    departmentConfig.Id,
+
+                                EmployeeId = employeeId,
+
+                                ApprovalLevel = approvalLevel,
+
+                                ApprovalRule = "AnyOne",
+
+                                IsActive = true,
+
+                                CreatedDate = DateTime.UtcNow
+                            };
+
+                        _context.EmployeeApprovalConfigs.Add(
+                            employeeApprovalConfig);
+
+                        await _context.SaveChangesAsync();
+
+                        int approvalOrder = 1;
+
+                        foreach (int approverId in approverIds)
+                        {
+                            var approverConfig =
+                                new EmployeeApprovalConfigApprover
+                                {
+                                    EmployeeApprovalConfigId =
+                                        employeeApprovalConfig.Id,
+
+                                    ApproverEmployeeId = approverId,
+
+                                    ApprovalOrder = approvalOrder++,
+
+                                    IsActive = true,
+
+                                    CreatedDate = DateTime.UtcNow
+                                };
+
+                            _context.EmployeeApprovalConfigApprovers.Add(
+                                approverConfig);
+                        }
+
+                        await _context.SaveChangesAsync();
+                    }
+                }
+
+                // ==========================================
+                // 21. COMMIT
+                // ==========================================
+
+                await transaction.CommitAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Approval configuration uploaded successfully.",
+
+                    organizationId,
+                    moduleCode,
+                    branchId,                                                 
+                    departmentId,
+
+                    configuredEmployees = approvalData.Count,
+
+                    configuredLevels =
+                        departmentConfig.TotalApprovalLevels
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error uploading approval Excel.",
+                    error = ex.Message
+                });
+            }
+        }
         //---------------Expense Tracker  Module..------------------------------//
 
 
@@ -10985,68 +13314,6 @@ Local Expense Claim Portal
 
         //------For Department base Filters -----------------
 
-        private async Task<IActionResult?> ValidateCompanyExpenseAdminAsync(
-      int organizationId)
-        {
-            try
-            {
-                if (organizationId <= 0)
-                {
-                    return Unauthorized(new
-                    {
-                        success = false,
-                        message = "Invalid organization ID."
-                    });
-                }
-
-                // Read Company Expense role from portal_roles.
-                var role = GetCompanyExpenseRole();
-
-                if (string.IsNullOrWhiteSpace(role))
-                {
-                    return Unauthorized(new
-                    {
-                        success = false,
-                        message = "Company Expense portal role not found."
-                    });
-                }
-
-                bool isAdmin =
-                    role.Equals("Admin", StringComparison.OrdinalIgnoreCase) ||
-                    role.Equals("SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
-                    role.Equals("Super Admin", StringComparison.OrdinalIgnoreCase);
-
-                if (!isAdmin)
-                {
-                    return Forbid();
-                }
-
-                // Verify Company Expense is enabled for this organization.
-                bool moduleEnabled =
-                    await _commonContext.OrganizationModules
-                        .AsNoTracking()
-                        .AnyAsync(x =>
-                            x.OrgId == organizationId &&
-                            x.ModuleCode == "company_expenses" &&
-                            x.IsActive);
-
-                if (!moduleEnabled)
-                {
-                    return StatusCode(403, new
-                    {
-                        success = false,
-                        message =
-                            "Company Expense module is not enabled for this organization."
-                    });
-                }
-
-                return null;
-            }
-            catch
-            {
-                throw;
-            }
-        }
 
 
         [Authorize]
@@ -11055,7 +13322,9 @@ Local Expense Claim Portal
         {
             try
             {
-                // Login token-la irukkura OrganizationId
+                // ==========================================
+                // 1. GET ORGANIZATION ID FROM JWT
+                // ==========================================
                 int organizationId = GetOrganizationId();
 
                 if (organizationId <= 0)
@@ -11067,62 +13336,148 @@ Local Expense Claim Portal
                     });
                 }
 
-                // Andha organization-oda employees mattum fetch pannuvom.
-                // Company Expense module validation inga repeat panna vendam.
-                var employees = await _commonContext.CompanyUsers
+                // ==========================================
+                // 2. GET ACTIVE EMPLOYEES
+                //    DepartmentId is stored as STRING
+                // ==========================================
+                var employeeRows = await _commonContext.CompanyUsers
                     .AsNoTracking()
                     .Where(e =>
                         e.OrgId == organizationId &&
                         (e.Status == null ||
-                         e.Status.ToLower() == "active"))
-                    .OrderBy(e => e.Department)
-                    .ThenBy(e => e.FullName)
+                         e.Status.Trim().ToUpper() == "ACTIVE"))
                     .Select(e => new
                     {
                         employeeId = e.EmpId,
                         employeeCode = e.EmpCode,
                         employeeName = e.FullName,
-                        department = e.Department == null
-                            ? null
-                            : e.Department.Trim()
+                        departmentId = e.DepartmentId
                     })
                     .ToListAsync();
 
-                // Employees data-lendhu unique department list
-                var departments = employees
-                    .Select(e => e.department)
-                    .Where(d => !string.IsNullOrWhiteSpace(d))
-                    .Select(d => d!)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(d => d)
+                // ==========================================
+                // 3. GET ALL DEPARTMENTS FOR THIS ORGANIZATION
+                //    Employee assignment is NOT required
+                // ==========================================
+                var departmentRows = await _commonContext.Departments
+                    .AsNoTracking()
+                    .Where(d => d.OrgId == organizationId)
+                    .Select(d => new
+                    {
+                        d.Id,
+                        d.DepartmentName
+                    })
+                    .ToListAsync();
+
+                // ==========================================
+                // 4. MAP EMPLOYEES TO DEPARTMENT NAMES
+                //    Supports "9" and "9,11"
+                // ==========================================
+                var employees = employeeRows
+                    .Select(e =>
+                    {
+                        var employeeDepartmentIds =
+                            (e.departmentId ?? string.Empty)
+                            .Split(
+                                ',',
+                                StringSplitOptions.RemoveEmptyEntries |
+                                StringSplitOptions.TrimEntries)
+                            .Where(id => int.TryParse(id, out _))
+                            .Select(int.Parse)
+                            .Distinct()
+                            .ToList();
+
+                        var matchedDepartments = departmentRows
+                            .Where(d => employeeDepartmentIds.Contains(d.Id))
+                            .ToList();
+
+                        return new
+                        {
+                            e.employeeId,
+                            e.employeeCode,
+                            e.employeeName,
+
+                            // Original DepartmentId string
+                            departmentId = e.departmentId,
+
+                            // Department names assigned to this employee
+                            departmentName = matchedDepartments.Count > 0
+                                ? string.Join(
+                                    ", ",
+                                    matchedDepartments.Select(d => d.DepartmentName))
+                                : (string?)null,
+
+                            // Internal employee department details
+                            DepartmentNames = matchedDepartments
+                                .Select(d => new
+                                {
+                                    departmentId = d.Id,
+                                    departmentName = d.DepartmentName
+                                })
+                                .ToList()
+                        };
+                    })
+                    .OrderBy(e => e.employeeName)
                     .ToList();
 
+                // ==========================================
+                // 5. RETURN ALL DEPARTMENTS FOR THIS ORG
+                //    Do NOT filter using employee assignments
+                // ==========================================
+                var departments = departmentRows
+                    .Select(d => new
+                    {
+                        departmentId = d.Id,
+                        departmentName = d.DepartmentName
+                    })
+                    .OrderBy(d => d.departmentName)
+                    .ToList();
+
+                // ==========================================
+                // 6. EMPLOYEE RESPONSE
+                // ==========================================
+                var employeeResponse = employees
+                    .Select(e => new
+                    {
+                        e.employeeId,
+                        e.employeeCode,
+                        e.employeeName,
+                        e.departmentId,
+                        e.departmentName
+                    })
+                    .ToList();
+
+                // ==========================================
+                // 7. RETURN RESPONSE
+                // ==========================================
                 return Ok(new
                 {
                     success = true,
                     organizationId,
                     departments,
-                    employees
+                    employees = employeeResponse
                 });
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Failed to load departments and employees."
+                    message = "Failed to load departments and employees.",
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
-
         [Authorize]
         [HttpGet("advance-summary/employees")]
         public async Task<IActionResult> GetAdvanceSummaryEmployees(
-     [FromQuery] string? department)
+    [FromQuery] string? departmentId)
         {
             try
             {
-                // Login token-la irukkura OrganizationId
+                // ==========================================
+                // 1. GET ORGANIZATION ID FROM JWT
+                // ==========================================
                 int organizationId = GetOrganizationId();
 
                 if (organizationId <= 0)
@@ -11134,12 +13489,13 @@ Local Expense Claim Portal
                     });
                 }
 
-                // Company Expense portal role mattum validate pannuvom.
-                // Module validation helper-ai inga call panna vendam.
+                // ==========================================
+                // 2. COMPANY EXPENSE ROLE VALIDATION
+                // ==========================================
                 string role = GetCompanyExpenseRole();
 
                 if (!new[] { "Admin", "SuperAdmin", "Super Admin" }
-                        .Contains(role, StringComparer.OrdinalIgnoreCase))
+                    .Contains(role, StringComparer.OrdinalIgnoreCase))
                 {
                     return StatusCode(403, new
                     {
@@ -11148,39 +13504,149 @@ Local Expense Claim Portal
                     });
                 }
 
-                // Token-la irukkura organization-oda employees mattum
-                var query = _commonContext.CompanyUsers
-                    .AsNoTracking()
-                    .Where(x =>
-                        x.OrgId == organizationId &&
-                        (x.Status == null ||
-                         x.Status.Trim().ToUpper() == "ACTIVE"));
+                // ==========================================
+                // 3. VALIDATE DEPARTMENT ID
+                // departmentId is string
+                // ==========================================
+                int parsedDepartmentId = 0;
 
-                // Department filter optional
-                if (!string.IsNullOrWhiteSpace(department))
+                if (!string.IsNullOrWhiteSpace(departmentId))
                 {
-                    string selectedDepartment = department.Trim().ToUpper();
-
-                    query = query.Where(x =>
-                        x.Department != null &&
-                        x.Department.Trim().ToUpper() == selectedDepartment);
+                    if (!int.TryParse(departmentId, out parsedDepartmentId) ||
+                        parsedDepartmentId <= 0)
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "Invalid departmentId."
+                        });
+                    }
                 }
 
-                var employees = await query
-                    .OrderBy(x => x.FullName)
-                    .Select(x => new
+                // ==========================================
+                // 4. VALIDATE DEPARTMENT BELONGS TO ORG
+                // ==========================================
+                if (!string.IsNullOrWhiteSpace(departmentId))
+                {
+                    bool departmentExists = await _commonContext.Departments
+                        .AsNoTracking()
+                        .AnyAsync(d =>
+                            d.Id == parsedDepartmentId &&
+                            d.OrgId == organizationId);
+
+                    if (!departmentExists)
                     {
-                        employeeId = x.EmpId,
-                        employeeCode = x.EmpCode,
-                        employeeName = x.FullName,
-                        department = x.Department
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "Department not found in this organization."
+                        });
+                    }
+                }
+
+                // ==========================================
+                // 5. GET ACTIVE EMPLOYEES FOR ORGANIZATION
+                // DepartmentId is stored as STRING
+                // Supports "9" and "9,11"
+                // ==========================================
+                var employeeRows = await _commonContext.CompanyUsers
+                    .AsNoTracking()
+                    .Where(e =>
+                        e.OrgId == organizationId &&
+                        (e.Status == null ||
+                         e.Status.Trim().ToUpper() == "ACTIVE"))
+                    .Select(e => new
+                    {
+                        employeeId = e.EmpId,
+                        employeeCode = e.EmpCode,
+                        employeeName = e.FullName,
+                        departmentId = e.DepartmentId
                     })
                     .ToListAsync();
 
+                // ==========================================
+                // 6. GET DEPARTMENTS FOR THIS ORGANIZATION
+                // ==========================================
+                var departmentRows = await _commonContext.Departments
+                    .AsNoTracking()
+                    .Where(d => d.OrgId == organizationId)
+                    .Select(d => new
+                    {
+                        departmentId = d.Id,
+                        departmentName = d.DepartmentName
+                    })
+                    .ToListAsync();
+
+                // ==========================================
+                // 7. MAP AND FILTER EMPLOYEES
+                // ==========================================
+                var employees = employeeRows
+                    .Select(e =>
+                    {
+                        // Convert employee DepartmentId string into integer IDs.
+                        // Example: "9" => [9]
+                        // Example: "9,11" => [9, 11]
+                        var employeeDepartmentIds =
+                            (e.departmentId ?? string.Empty)
+                            .Split(
+                                ',',
+                                StringSplitOptions.RemoveEmptyEntries |
+                                StringSplitOptions.TrimEntries)
+                            .Where(id => int.TryParse(id, out _))
+                            .Select(int.Parse)
+                            .Distinct()
+                            .ToList();
+
+                        // Match department names within the same organization.
+                        var matchedDepartments = departmentRows
+                            .Where(d =>
+                                employeeDepartmentIds.Contains(d.departmentId))
+                            .ToList();
+
+                        return new
+                        {
+                            e.employeeId,
+                            e.employeeCode,
+                            e.employeeName,
+
+                            // Original DepartmentId string
+                            departmentId = e.departmentId,
+
+                            // Matched department names
+                            departmentName = matchedDepartments.Count > 0
+                                ? string.Join(
+                                    ", ",
+                                    matchedDepartments.Select(
+                                        d => d.departmentName))
+                                : (string?)null,
+
+                            // Internal use for filtering
+                            DepartmentIds = employeeDepartmentIds
+                        };
+                    })
+                    .Where(e =>
+                        string.IsNullOrWhiteSpace(departmentId) ||
+                        e.DepartmentIds.Contains(parsedDepartmentId))
+                    .OrderBy(e => e.employeeName)
+                    .Select(e => new
+                    {
+                        e.employeeId,
+                        e.employeeCode,
+                        e.employeeName,
+                        e.departmentId,
+                        e.departmentName
+                    })
+                    .ToList();
+
+                // ==========================================
+                // 8. RETURN RESPONSE
+                // ==========================================
                 return Ok(new
                 {
                     success = true,
                     organizationId,
+                    departmentId,
+                    totalEmployees = employees.Count,
                     data = employees
                 });
             }
@@ -11196,15 +13662,21 @@ Local Expense Claim Portal
         }
 
 
+
+  
+
         [Authorize]
         [HttpGet("summary-filtered")]
         public async Task<IActionResult> GetFilteredExpenseSummary(
-       [FromQuery] string? department = null,
-       [FromQuery] int? employeeId = null)
+            [FromQuery] int? departmentId = null,
+            [FromQuery] int? employeeId = null,
+            [FromQuery] int? month = null,
+            [FromQuery] int? year = null,
+            [FromQuery] int? week = null)
         {
             try
             {
-                // 1. GET ORGANIZATION ID FROM JWT
+                // 1. Get OrganizationId from JWT
                 int organizationId = GetOrganizationId();
 
                 if (organizationId <= 0)
@@ -11212,98 +13684,145 @@ Local Expense Claim Portal
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "Invalid organization ID."
+                        message = "Invalid organization."
                     });
                 }
 
-                // 2. GET COMPANY EXPENSE PORTAL ROLE
+                // 2. Role validation
                 var role = GetCompanyExpenseRole();
 
                 if (string.IsNullOrWhiteSpace(role))
                 {
-                    return Unauthorized(new
-                    {
-                        success = false,
-                        message = "Company Expense portal role not found."
-                    });
+                    return Forbid();
                 }
 
-                bool isAdmin =
-                    role.Equals("Admin", StringComparison.OrdinalIgnoreCase) ||
-                    role.Equals("SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
-                    role.Equals("Super Admin", StringComparison.OrdinalIgnoreCase);
-
-                if (!isAdmin)
+                if (!role.Equals("Admin", StringComparison.OrdinalIgnoreCase) &&
+                    !role.Equals("SuperAdmin", StringComparison.OrdinalIgnoreCase) &&
+                    !role.Equals("Super Admin", StringComparison.OrdinalIgnoreCase))
                 {
                     return Forbid();
                 }
 
-                // NOTE:
-                // OrganizationModules table-la module access check
-                // inga repeat panna vendam.
-                // OrganizationId-based filtering keezha maintain pannirukkom.
-
-                // 3. VALIDATE FILTERS
-                department = string.IsNullOrWhiteSpace(department)
-                    ? null
-                    : department.Trim();
+                // 3. Validate filters
+                if (departmentId.HasValue && departmentId.Value <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Invalid departmentId."
+                    });
+                }
 
                 if (employeeId.HasValue && employeeId.Value <= 0)
                 {
                     return BadRequest(new
                     {
                         success = false,
-                        message = "Invalid EmployeeId."
+                        message = "Invalid employeeId."
                     });
                 }
 
-                // 4. GET EMPLOYEES FROM COMMON LOGIN DB
+                if (month.HasValue && (month.Value < 1 || month.Value > 12))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Month must be between 1 and 12."
+                    });
+                }
+
+                if (year.HasValue && (year.Value < 1 || year.Value > 9999))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Invalid year."
+                    });
+                }
+
+                if (week.HasValue && (week.Value < 1 || week.Value > 5))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Week must be between 1 and 5."
+                    });
+                }
+
+                if (week.HasValue && !month.HasValue)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Month is required when filtering by week."
+                    });
+                }
+
+                // 4. Selected month/year
+                var now = DateTime.Now;
+
+                int selectedMonth = month ?? now.Month;
+                int selectedYear = year ?? now.Year;
+
+                var monthStart = new DateTime(selectedYear, selectedMonth, 1);
+                var nextMonthStart = monthStart.AddMonths(1);
+
+                var yearStart = new DateTime(selectedYear, 1, 1);
+                var nextYearStart = yearStart.AddYears(1);
+
+                // 5. Get employees using department ID / employee ID
                 List<int>? employeeIds = null;
 
-                if (department != null || employeeId.HasValue)
+                if (departmentId.HasValue || employeeId.HasValue)
                 {
                     var employeeQuery = _commonContext.CompanyUsers
                         .AsNoTracking()
                         .Where(x =>
                             x.OrgId == organizationId &&
-                            (
-                                x.Status == null ||
-                                x.Status.Trim().ToUpper() == "ACTIVE"
-                            ));
-
-                    if (department != null)
-                    {
-                        string selectedDepartment = department.ToLower();
-
-                        employeeQuery = employeeQuery.Where(x =>
-                            x.Department != null &&
-                            x.Department.Trim().ToLower() == selectedDepartment);
-                    }
+                            (x.Status == null ||
+                             x.Status.Trim().ToUpper() == "ACTIVE"));
 
                     if (employeeId.HasValue)
                     {
-                        employeeQuery = employeeQuery.Where(x =>
-                            x.EmpId == employeeId.Value);
+                        employeeQuery = employeeQuery
+                            .Where(x => x.EmpId == employeeId.Value);
                     }
 
-                    employeeIds = await employeeQuery
-                        .Select(x => x.EmpId)
-                        .Distinct()
+                    var employeeRows = await employeeQuery
+                        .Select(x => new
+                        {
+                            x.EmpId,
+                            x.DepartmentId
+                        })
                         .ToListAsync();
 
-                    if (employeeId.HasValue && employeeIds.Count == 0)
+                    // DepartmentId may contain "9" or "9,11".
+                    employeeIds = employeeRows
+                        .Where(x =>
+                            !departmentId.HasValue ||
+                            (x.DepartmentId ?? string.Empty)
+                                .Split(
+                                    ',',
+                                    StringSplitOptions.RemoveEmptyEntries |
+                                    StringSplitOptions.TrimEntries)
+                                .Any(id =>
+                                    int.TryParse(id, out int parsedId) &&
+                                    parsedId == departmentId.Value))
+                        .Select(x => x.EmpId)
+                        .Distinct()
+                        .ToList();
+
+                    if (employeeIds.Count == 0)
                     {
                         return NotFound(new
                         {
                             success = false,
-                            message =
-                                "Employee not found in the selected organization or department."
+                            message = "No employees found for the selected filters."
                         });
                     }
                 }
 
-                // 5. ADVANCE QUERY
-                // Organization-specific active advance records
+                // 6. Advance query
                 var advanceQuery = _context.ExpenseMaster
                     .AsNoTracking()
                     .Where(x =>
@@ -11313,12 +13832,11 @@ Local Expense Claim Portal
 
                 if (employeeIds != null)
                 {
-                    advanceQuery = advanceQuery.Where(x =>
-                        employeeIds.Contains(x.AssignedTo!.Value));
+                    advanceQuery = advanceQuery
+                        .Where(x => employeeIds.Contains(x.AssignedTo!.Value));
                 }
 
-                // 6. SPENT QUERY
-                // Organization-specific active spent records
+                // 7. Spent query
                 var spentQuery = _context.SpentAmounts
                     .AsNoTracking()
                     .Where(x =>
@@ -11328,54 +13846,130 @@ Local Expense Claim Portal
 
                 if (employeeIds != null)
                 {
-                    spentQuery = spentQuery.Where(x =>
-                        employeeIds.Contains(x.employee_id!.Value));
+                    spentQuery = spentQuery
+                        .Where(x => employeeIds.Contains(x.employee_id!.Value));
                 }
 
-                // 7. CURRENT MONTH AND YEAR
-                var now = DateTime.Now;
+                // 8. Filtered advance/spent totals
+                // These totals follow all selected filters.
+                var filteredAdvanceQuery = advanceQuery;
+                var filteredSpentQuery = spentQuery;
 
-                var monthStart = new DateTime(
-                    now.Year,
-                    now.Month,
-                    1);
-
-                var nextMonthStart = monthStart.AddMonths(1);
-
-                var yearStart = new DateTime(
-                    now.Year,
-                    1,
-                    1);
-
-                var nextYearStart = yearStart.AddYears(1);
-
-                // 8. MONTHLY AND YEARLY ADVANCE SUMMARY
-                decimal monthAdvance = await advanceQuery
-                    .Where(x =>
+                if (month.HasValue)
+                {
+                    filteredAdvanceQuery = filteredAdvanceQuery.Where(x =>
                         x.CreatedDate >= monthStart &&
-                        x.CreatedDate < nextMonthStart)
-                    .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
+                        x.CreatedDate < nextMonthStart);
 
-                decimal yearAdvance = await advanceQuery
-                    .Where(x =>
-                        x.CreatedDate >= yearStart &&
-                        x.CreatedDate < nextYearStart)
-                    .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
-
-                // 9. MONTHLY AND YEARLY SPENT SUMMARY
-                decimal monthSpent = await spentQuery
-                    .Where(x =>
+                    filteredSpentQuery = filteredSpentQuery.Where(x =>
                         x.Date >= monthStart &&
-                        x.Date < nextMonthStart)
-                    .SumAsync(x => (decimal?)x.Amount) ?? 0m;
+                        x.Date < nextMonthStart);
+                }
 
-                decimal yearSpent = await spentQuery
-                    .Where(x =>
+                if (year.HasValue)
+                {
+                    filteredAdvanceQuery = filteredAdvanceQuery.Where(x =>
+                        x.CreatedDate >= yearStart &&
+                        x.CreatedDate < nextYearStart);
+
+                    filteredSpentQuery = filteredSpentQuery.Where(x =>
                         x.Date >= yearStart &&
-                        x.Date < nextYearStart)
+                        x.Date < nextYearStart);
+                }
+
+                // 9. Week range
+                DateTime? weekStart = null;
+                DateTime? weekEndExclusive = null;
+
+                if (week.HasValue)
+                {
+                    weekStart = monthStart.AddDays((week.Value - 1) * 7);
+
+                    if (weekStart.Value >= nextMonthStart)
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "The selected week does not exist in this month."
+                        });
+                    }
+
+                    DateTime calculatedWeekEnd = weekStart.Value.AddDays(7);
+
+                    weekEndExclusive = calculatedWeekEnd < nextMonthStart
+                        ? calculatedWeekEnd
+                        : nextMonthStart;
+                }
+
+                // 10. Filtered totals
+                // When week is supplied, totalAdvance/totalSpent also reflect that week.
+                if (weekStart.HasValue && weekEndExclusive.HasValue)
+                {
+                    filteredAdvanceQuery = filteredAdvanceQuery.Where(x =>
+                        x.CreatedDate >= weekStart.Value &&
+                        x.CreatedDate < weekEndExclusive.Value);
+
+                    filteredSpentQuery = filteredSpentQuery.Where(x =>
+                        x.Date >= weekStart.Value &&
+                        x.Date < weekEndExclusive.Value);
+                }
+
+                decimal totalAdvance = await filteredAdvanceQuery
+                    .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
+
+                decimal totalSpent = await filteredSpentQuery
                     .SumAsync(x => (decimal?)x.Amount) ?? 0m;
 
-                // 10. GET ADVANCE TABLE RECORDS
+                // 11. Monthly totals
+                var monthAdvanceQuery = advanceQuery.Where(x =>
+                    x.CreatedDate >= monthStart &&
+                    x.CreatedDate < nextMonthStart);
+
+                var monthSpentQuery = spentQuery.Where(x =>
+                    x.Date >= monthStart &&
+                    x.Date < nextMonthStart);
+
+                decimal monthAdvance = await monthAdvanceQuery
+                    .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
+
+                decimal monthSpent = await monthSpentQuery
+                    .SumAsync(x => (decimal?)x.Amount) ?? 0m;
+
+                // 12. Yearly totals
+                var yearAdvanceQuery = advanceQuery.Where(x =>
+                    x.CreatedDate >= yearStart &&
+                    x.CreatedDate < nextYearStart);
+
+                var yearSpentQuery = spentQuery.Where(x =>
+                    x.Date >= yearStart &&
+                    x.Date < nextYearStart);
+
+                decimal yearAdvance = await yearAdvanceQuery
+                    .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
+
+                decimal yearSpent = await yearSpentQuery
+                    .SumAsync(x => (decimal?)x.Amount) ?? 0m;
+
+                // 13. Weekly totals
+                decimal weekAdvance = 0m;
+                decimal weekSpent = 0m;
+
+                if (weekStart.HasValue && weekEndExclusive.HasValue)
+                {
+                    weekAdvance = await advanceQuery
+                        .Where(x =>
+                            x.CreatedDate >= weekStart.Value &&
+                            x.CreatedDate < weekEndExclusive.Value)
+                        .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
+
+                    weekSpent = await spentQuery
+                        .Where(x =>
+                            x.Date >= weekStart.Value &&
+                            x.Date < weekEndExclusive.Value)
+                        .SumAsync(x => (decimal?)x.Amount) ?? 0m;
+                }
+
+                // 14. Advance details
                 var advanceRecords = await advanceQuery
                     .OrderByDescending(x => x.CreatedDate)
                     .Select(x => new
@@ -11390,7 +13984,7 @@ Local Expense Claim Portal
                     })
                     .ToListAsync();
 
-                // 11. GET SPENT TABLE RECORDS
+                // 15. Spent details
                 var spentRecords = await spentQuery
                     .OrderByDescending(x => x.Date)
                     .ThenByDescending(x => x.Id)
@@ -11406,120 +14000,138 @@ Local Expense Claim Portal
                     })
                     .ToListAsync();
 
-                // 12. COLLECT EMPLOYEE IDS
+                // 16. Related employee IDs
                 var relatedEmployeeIds = advanceRecords
-                    .Where(x => x.AssignedTo.HasValue)
-                    .Select(x => x.AssignedTo!.Value)
-                    .Concat(
-                        advanceRecords
-                            .Where(x => x.AssignedBy.HasValue)
-                            .Select(x => x.AssignedBy!.Value))
-                    .Concat(
-                        spentRecords
-                            .Where(x => x.employee_id.HasValue)
-                            .Select(x => x.employee_id!.Value))
+                    .SelectMany(x => new int?[]
+                    {
+                x.AssignedTo,
+                x.AssignedBy
+                    })
+                    .Concat(spentRecords.Select(x => x.employee_id))
+                    .Where(x => x.HasValue)
+                    .Select(x => x!.Value)
                     .Distinct()
                     .ToList();
 
-                // 13. GET EMPLOYEE DETAILS
-                // Common DB-la same organization employees mattum
-                var people = await _commonContext.CompanyUsers
+                // 17. Employee lookup
+                var employeeLookup = await _commonContext.CompanyUsers
                     .AsNoTracking()
                     .Where(x =>
                         x.OrgId == organizationId &&
                         relatedEmployeeIds.Contains(x.EmpId))
-                    .Select(x => new
-                    {
-                        x.EmpId,
-                        x.EmpCode,
-                        x.FullName,
-                        x.Department
-                    })
-                    .ToListAsync();
+                    .ToDictionaryAsync(x => x.EmpId, x => x);
 
-                var peopleById = people.ToDictionary(x => x.EmpId);
+                // 18. Department name lookup
+                var departmentIds = employeeLookup.Values
+                    .SelectMany(x =>
+                        (x.DepartmentId ?? string.Empty)
+                            .Split(
+                                ',',
+                                StringSplitOptions.RemoveEmptyEntries |
+                                StringSplitOptions.TrimEntries))
+                    .Select(id =>
+                        int.TryParse(id, out int parsedId) ? parsedId : 0)
+                    .Where(id => id > 0)
+                    .Distinct()
+                    .ToList();
 
-                // 14. GET PURCHASE TYPE NAMES
+                var departmentLookup = await _commonContext.Departments
+                    .AsNoTracking()
+                    .Where(x =>
+                        x.OrgId == organizationId &&
+                        departmentIds.Contains(x.Id))
+                    .ToDictionaryAsync(x => x.Id, x => x.DepartmentName);
+
+                string? GetDepartmentNames(string? departmentIdValue)
+                {
+                    if (string.IsNullOrWhiteSpace(departmentIdValue))
+                        return null;
+
+                    var names = departmentIdValue
+                        .Split(
+                            ',',
+                            StringSplitOptions.RemoveEmptyEntries |
+                            StringSplitOptions.TrimEntries)
+                        .Select(id =>
+                            int.TryParse(id, out int parsedId) &&
+                            departmentLookup.TryGetValue(parsedId, out var name)
+                                ? name
+                                : null)
+                        .Where(name => !string.IsNullOrWhiteSpace(name));
+
+                    return string.Join(", ", names);
+                }
+
+                // 19. Purchase type lookup used only for spent detail names.
+                // No purchaseTypes array is returned.
                 var purchaseTypes = await _context.PurchaseTypes
                     .AsNoTracking()
                     .Where(x => x.OrganizationId == organizationId)
-                    .Select(x => new
+                    .ToDictionaryAsync(x => x.Id, x => x.Name);
+
+                // 20. Advance detail projection
+                var advanceDetails = advanceRecords.Select(x =>
+                {
+                    employeeLookup.TryGetValue(
+                        x.AssignedTo ?? 0,
+                        out var assignedEmployee);
+
+                    employeeLookup.TryGetValue(
+                        x.AssignedBy ?? 0,
+                        out var assignedByEmployee);
+
+                    return new
                     {
-                        x.Id,
-                        x.Name
-                    })
-                    .ToListAsync();
+                        expenseId = x.ExpenseId,
+                        date = x.CreatedDate,
 
-                var purchaseTypeById = purchaseTypes
-                    .GroupBy(x => x.Id)
-                    .ToDictionary(
-                        x => x.Key,
-                        x => x.First().Name);
+                        employeeId = x.AssignedTo,
+                        employeeCode = assignedEmployee?.EmpCode,
+                        employeeName = assignedEmployee?.FullName,
+                        departmentId = assignedEmployee?.DepartmentId,
+                        department = GetDepartmentNames(
+                            assignedEmployee?.DepartmentId),
 
-                // 15. ADVANCE AMOUNT TABLE
-                var advanceDetails = advanceRecords
-                    .Select(x =>
+                        assignedBy = assignedByEmployee?.FullName,
+
+                        advanceAmount = x.ExpenseAmount,
+                        purpose = x.Purpose,
+                        remarks = x.Remarks
+                    };
+                }).ToList();
+
+                // 21. Spent detail projection
+                var spentDetails = spentRecords.Select(x =>
+                {
+                    employeeLookup.TryGetValue(
+                        x.employee_id ?? 0,
+                        out var employee);
+
+                    purchaseTypes.TryGetValue(
+                        x.PurchaseItem,
+                        out var purchaseType);
+
+                    return new
                     {
-                        peopleById.TryGetValue(
-                            x.AssignedTo ?? 0,
-                            out var employee);
+                        spentId = x.Id,
+                        date = x.Date,
 
-                        peopleById.TryGetValue(
-                            x.AssignedBy ?? 0,
-                            out var assignedBy);
+                        employeeId = x.employee_id,
+                        employeeCode = employee?.EmpCode,
+                        employeeName = employee?.FullName,
+                        departmentId = employee?.DepartmentId,
+                        department = GetDepartmentNames(employee?.DepartmentId),
 
-                        return new
-                        {
-                            expenseId = x.ExpenseId,
-                            date = x.CreatedDate,
-                            employeeId = x.AssignedTo,
+                        purchaseItemId = x.PurchaseItem,
+                        purchaseType,
 
-                            employeeCode = employee?.EmpCode ?? "-",
-                            employeeName = employee?.FullName ?? "-",
-                            department = employee?.Department ?? "-",
+                        spentAmount = x.Amount,
+                        remarks = x.Remarks,
+                        billFile = x.BillFile
+                    };
+                }).ToList();
 
-                            assignedBy = assignedBy?.FullName ?? "Admin",
-
-                            advanceAmount = x.ExpenseAmount,
-                            purpose = x.Purpose,
-                            remarks = x.Remarks
-                        };
-                    })
-                    .ToList();
-
-                // 16. SPENT AMOUNT TABLE
-                var spentDetails = spentRecords
-                    .Select(x =>
-                    {
-                        peopleById.TryGetValue(
-                            x.employee_id ?? 0,
-                            out var employee);
-
-                        purchaseTypeById.TryGetValue(
-                            x.PurchaseItem,
-                            out var purchaseTypeName);
-
-                        return new
-                        {
-                            spentId = x.Id,
-                            date = x.Date,
-                            employeeId = x.employee_id,
-
-                            employeeCode = employee?.EmpCode ?? "-",
-                            employeeName = employee?.FullName ?? "-",
-                            department = employee?.Department ?? "-",
-
-                            purchaseType = purchaseTypeName ?? "Others",
-                            purchaseItemId = x.PurchaseItem,
-
-                            spentAmount = x.Amount,
-                            remarks = x.Remarks,
-                            billFile = x.BillFile
-                        };
-                    })
-                    .ToList();
-
-                // 17. FINAL RESPONSE
+                // 22. Final response
                 return Ok(new
                 {
                     success = true,
@@ -11527,8 +14139,14 @@ Local Expense Claim Portal
 
                     filters = new
                     {
-                        department,
-                        employeeId
+                        departmentId,
+                        employeeId,
+                        month,
+                        year,
+                        week,
+
+                        weekStart,
+                        weekEnd = weekEndExclusive?.AddDays(-1)
                     },
 
                     summary = new
@@ -11540,7 +14158,15 @@ Local Expense Claim Portal
                         YearSpent = yearSpent,
 
                         MonthBalance = monthAdvance - monthSpent,
-                        YearBalance = yearAdvance - yearSpent
+                        YearBalance = yearAdvance - yearSpent,
+
+                        WeekAdvance = weekAdvance,
+                        WeekSpent = weekSpent,
+                        WeekBalance = weekAdvance - weekSpent,
+
+                        TotalAdvance = totalAdvance,
+                        TotalSpent = totalSpent,
+                        TotalBalance = totalAdvance - totalSpent
                     },
 
                     advanceDetails,
@@ -11552,12 +14178,13 @@ Local Expense Claim Portal
                 return StatusCode(500, new
                 {
                     success = false,
-                    message =
-                        "Error while fetching filtered Company Expense summary.",
+                    message = "Error while fetching filtered Company Expense summary.",
                     error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
+
+
 
 
 
@@ -12123,6 +14750,231 @@ Local Expense Claim Portal
             }
         }
 
+        //[Authorize]
+        //[HttpGet("summary")]
+        //public async Task<IActionResult> GetSummary()
+        //{
+        //    try
+        //    {
+        //        // ==========================================
+        //        // 1. OrganizationId from JWT
+        //        // ==========================================
+        //        var organizationId = GetOrganizationId();
+
+        //        // ==========================================
+        //        // 2. Company Expense Role
+        //        //    FROM portal_roles
+        //        // ==========================================
+        //        var role = GetCompanyExpenseRole();
+
+        //        if (string.IsNullOrWhiteSpace(role))
+        //        {
+        //            return Unauthorized(new
+        //            {
+        //                success = false,
+        //                message = "Company Expense role not found in portal_roles."
+        //            });
+        //        }
+
+        //        // ==========================================
+        //        // 3. Check Admin / SuperAdmin
+        //        // ==========================================
+        //        bool isAdmin =
+        //            role.Equals("Admin", StringComparison.OrdinalIgnoreCase) ||
+        //            role.Equals("SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+        //            role.Equals("Super Admin", StringComparison.OrdinalIgnoreCase);
+
+        //        // ==========================================
+        //        // 4. EmployeeId
+        //        //    Only required for Employee
+        //        // ==========================================
+        //        int employeeId = 0;
+
+        //        if (!isAdmin)
+        //        {
+        //            var employeeIdClaim = User.FindFirst("EmpId")?.Value;
+
+        //            if (!int.TryParse(employeeIdClaim, out employeeId) ||
+        //                employeeId <= 0)
+        //            {
+        //                return Unauthorized(new
+        //                {
+        //                    success = false,
+        //                    message = "EmployeeId not found in token."
+        //                });
+        //            }
+        //        }
+
+        //        // ==========================================
+        //        // 5. Current Month / Year
+        //        // ==========================================
+        //        var currentMonth = DateTime.Now.Month;
+        //        var currentYear = DateTime.Now.Year;
+
+        //        decimal monthReceived = 0;
+        //        decimal yearReceived = 0;
+
+        //        decimal monthExpense = 0;
+        //        decimal yearExpense = 0;
+
+        //        // ==========================================
+        //        // 6. ACCESS
+        //        // ==========================================
+        //        bool fullAccess = false;
+
+        //        if (isAdmin)
+        //        {
+        //            // Admin has full organization access
+        //            fullAccess = true;
+        //        }
+        //        else
+        //        {
+
+
+        //            if (role != "Employee") 
+        //            {
+        //                fullAccess = true;
+        //            }
+        //            else 
+        //            {
+
+        //                fullAccess = false;
+        //            }
+        //        }
+
+        //        // ==========================================
+        //        // 7. RECEIVED / ADVANCE
+        //        // ==========================================
+
+        //        if (fullAccess)
+        //        {
+        //            // Admin / Full Access
+        //            monthReceived = await _context.ExpenseMaster
+        //                .Where(x =>
+        //                    x.OrganizationId == organizationId &&
+        //                    x.Status == "Active" &&
+        //                    x.CreatedDate.Month == currentMonth &&
+        //                    x.CreatedDate.Year == currentYear)
+        //                .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
+
+        //            yearReceived = await _context.ExpenseMaster
+        //                .Where(x =>
+        //                    x.OrganizationId == organizationId &&
+        //                    x.Status == "Active" &&
+        //                    x.CreatedDate.Year == currentYear)
+        //                .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
+        //        }
+        //        else
+        //        {
+        //            // Employee / Limited Access
+        //            monthReceived = await _context.ExpenseMaster
+        //                .Where(x =>
+        //                    x.OrganizationId == organizationId &&
+        //                    x.AssignedTo == employeeId &&
+        //                    x.Status == "Active" &&
+        //                    x.CreatedDate.Month == currentMonth &&
+        //                    x.CreatedDate.Year == currentYear)
+        //                .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
+
+        //            yearReceived = await _context.ExpenseMaster
+        //                .Where(x =>
+        //                    x.OrganizationId == organizationId &&
+        //                    x.AssignedTo == employeeId &&
+        //                    x.Status == "Active" &&
+        //                    x.CreatedDate.Year == currentYear)
+        //                .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
+        //        }
+
+        //        // ==========================================
+        //        // 8. SPENT / EXPENSE
+        //        // ==========================================
+
+        //        if (fullAccess)
+        //        {
+        //            // Admin / Full Access
+        //            monthExpense = await _context.SpentAmounts
+        //                .Where(x =>
+        //                    x.OrganizationId == organizationId &&
+        //                    x.IsActive &&
+        //                    x.Date.Month == currentMonth &&
+        //                    x.Date.Year == currentYear)
+        //                .SumAsync(x => (decimal?)x.Amount) ?? 0;
+
+        //            yearExpense = await _context.SpentAmounts
+        //                .Where(x =>
+        //                    x.OrganizationId == organizationId &&
+        //                    x.IsActive &&
+        //                    x.Date.Year == currentYear)
+        //                .SumAsync(x => (decimal?)x.Amount) ?? 0;
+        //        }
+        //        else
+        //        {
+        //            // Employee / Limited Access
+        //            monthExpense = await _context.SpentAmounts
+        //                .Where(x =>
+        //                    x.OrganizationId == organizationId &&
+        //                    x.IsActive &&
+        //                    x.employee_id == employeeId &&
+        //                    x.Date.Month == currentMonth &&
+        //                    x.Date.Year == currentYear)
+        //                .SumAsync(x => (decimal?)x.Amount) ?? 0;
+
+        //            yearExpense = await _context.SpentAmounts
+        //                .Where(x =>
+        //                    x.OrganizationId == organizationId &&
+        //                    x.IsActive &&
+        //                    x.employee_id == employeeId &&
+        //                    x.Date.Year == currentYear)
+        //                .SumAsync(x => (decimal?)x.Amount) ?? 0;
+        //        }
+
+        //        // ==========================================
+        //        // 9. BALANCE
+        //        // ==========================================
+        //        var monthBalance = monthReceived - monthExpense;
+        //        var yearBalance = yearReceived - yearExpense;
+
+        //        // ==========================================
+        //        // 10. RESPONSE
+        //        // ==========================================
+        //        return Ok(new
+        //        {
+        //            success = true,
+
+        //            // Company Expense role from portal_roles
+        //            role = role,
+
+        //            organizationId = organizationId,
+
+        //            employeeId = isAdmin
+        //                ? (int?)null
+        //                : employeeId,
+
+        //            fullAccess = fullAccess,
+
+        //            MonthAdvance = monthReceived,
+        //            YearAdvance = yearReceived,
+
+        //            MonthSpent = monthExpense,
+        //            YearSpent = yearExpense,
+
+        //            MonthBalance = monthBalance,
+        //            YearBalance = yearBalance
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new
+        //        {
+        //            success = false,
+        //            message = "Error while fetching summary.",
+        //            error = ex.InnerException?.Message ?? ex.Message
+        //        });
+        //    }
+        //}
+
+
+
         [Authorize]
         [HttpGet("summary")]
         public async Task<IActionResult> GetSummary()
@@ -12134,9 +14986,17 @@ Local Expense Claim Portal
                 // ==========================================
                 var organizationId = GetOrganizationId();
 
+                if (organizationId <= 0)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Invalid organization."
+                    });
+                }
+
                 // ==========================================
                 // 2. Company Expense Role
-                //    FROM portal_roles
                 // ==========================================
                 var role = GetCompanyExpenseRole();
 
@@ -12180,9 +15040,12 @@ Local Expense Claim Portal
 
                 // ==========================================
                 // 5. Current Month / Year
+                //    EXISTING LOGIC - UNCHANGED
                 // ==========================================
-                var currentMonth = DateTime.Now.Month;
-                var currentYear = DateTime.Now.Year;
+                var now = DateTime.Now;
+
+                var currentMonth = now.Month;
+                var currentYear = now.Year;
 
                 decimal monthReceived = 0;
                 decimal yearReceived = 0;
@@ -12192,54 +15055,54 @@ Local Expense Claim Portal
 
                 // ==========================================
                 // 6. ACCESS
+                //    EXISTING LOGIC - UNCHANGED
                 // ==========================================
                 bool fullAccess = false;
 
                 if (isAdmin)
                 {
-                    // Admin has full organization access
                     fullAccess = true;
                 }
                 else
                 {
-                   
-
-                    if (role != "Employee") 
+                    if (!role.Equals(
+                        "Employee",
+                        StringComparison.OrdinalIgnoreCase))
                     {
                         fullAccess = true;
                     }
-                    else 
+                    else
                     {
-
                         fullAccess = false;
                     }
                 }
 
                 // ==========================================
                 // 7. RECEIVED / ADVANCE
+                //    EXISTING MONTH / YEAR LOGIC
                 // ==========================================
-
                 if (fullAccess)
                 {
-                    // Admin / Full Access
+                    // Month Advance
                     monthReceived = await _context.ExpenseMaster
                         .Where(x =>
                             x.OrganizationId == organizationId &&
                             x.Status == "Active" &&
                             x.CreatedDate.Month == currentMonth &&
                             x.CreatedDate.Year == currentYear)
-                        .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
+                        .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
 
+                    // Year Advance
                     yearReceived = await _context.ExpenseMaster
                         .Where(x =>
                             x.OrganizationId == organizationId &&
                             x.Status == "Active" &&
                             x.CreatedDate.Year == currentYear)
-                        .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
+                        .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
                 }
                 else
                 {
-                    // Employee / Limited Access
+                    // Employee Month Advance
                     monthReceived = await _context.ExpenseMaster
                         .Where(x =>
                             x.OrganizationId == organizationId &&
@@ -12247,42 +15110,44 @@ Local Expense Claim Portal
                             x.Status == "Active" &&
                             x.CreatedDate.Month == currentMonth &&
                             x.CreatedDate.Year == currentYear)
-                        .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
+                        .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
 
+                    // Employee Year Advance
                     yearReceived = await _context.ExpenseMaster
                         .Where(x =>
                             x.OrganizationId == organizationId &&
                             x.AssignedTo == employeeId &&
                             x.Status == "Active" &&
                             x.CreatedDate.Year == currentYear)
-                        .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0;
+                        .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
                 }
 
                 // ==========================================
                 // 8. SPENT / EXPENSE
+                //    EXISTING MONTH / YEAR LOGIC
                 // ==========================================
-
                 if (fullAccess)
                 {
-                    // Admin / Full Access
+                    // Month Expense
                     monthExpense = await _context.SpentAmounts
                         .Where(x =>
                             x.OrganizationId == organizationId &&
                             x.IsActive &&
                             x.Date.Month == currentMonth &&
                             x.Date.Year == currentYear)
-                        .SumAsync(x => (decimal?)x.Amount) ?? 0;
+                        .SumAsync(x => (decimal?)x.Amount) ?? 0m;
 
+                    // Year Expense
                     yearExpense = await _context.SpentAmounts
                         .Where(x =>
                             x.OrganizationId == organizationId &&
                             x.IsActive &&
                             x.Date.Year == currentYear)
-                        .SumAsync(x => (decimal?)x.Amount) ?? 0;
+                        .SumAsync(x => (decimal?)x.Amount) ?? 0m;
                 }
                 else
                 {
-                    // Employee / Limited Access
+                    // Employee Month Expense
                     monthExpense = await _context.SpentAmounts
                         .Where(x =>
                             x.OrganizationId == organizationId &&
@@ -12290,33 +15155,100 @@ Local Expense Claim Portal
                             x.employee_id == employeeId &&
                             x.Date.Month == currentMonth &&
                             x.Date.Year == currentYear)
-                        .SumAsync(x => (decimal?)x.Amount) ?? 0;
+                        .SumAsync(x => (decimal?)x.Amount) ?? 0m;
 
+                    // Employee Year Expense
                     yearExpense = await _context.SpentAmounts
                         .Where(x =>
                             x.OrganizationId == organizationId &&
                             x.IsActive &&
                             x.employee_id == employeeId &&
                             x.Date.Year == currentYear)
-                        .SumAsync(x => (decimal?)x.Amount) ?? 0;
+                        .SumAsync(x => (decimal?)x.Amount) ?? 0m;
                 }
 
                 // ==========================================
-                // 9. BALANCE
+                // 9. NEW: CURRENT WEEK DATE RANGE
+                //    Monday 00:00 to next Monday 00:00
+                // ==========================================
+                int daysSinceMonday =
+                    ((int)now.DayOfWeek - (int)DayOfWeek.Monday + 7) % 7;
+
+                DateTime weekStart = now.Date.AddDays(-daysSinceMonday);
+                DateTime weekEndExclusive = weekStart.AddDays(7);
+
+                // ==========================================
+                // 10. NEW: WEEKLY ADVANCE
+                // ==========================================
+                decimal weekReceived = 0m;
+
+                if (fullAccess)
+                {
+                    weekReceived = await _context.ExpenseMaster
+                        .Where(x =>
+                            x.OrganizationId == organizationId &&
+                            x.Status == "Active" &&
+                            x.CreatedDate >= weekStart &&
+                            x.CreatedDate < weekEndExclusive)
+                        .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
+                }
+                else
+                {
+                    weekReceived = await _context.ExpenseMaster
+                        .Where(x =>
+                            x.OrganizationId == organizationId &&
+                            x.AssignedTo == employeeId &&
+                            x.Status == "Active" &&
+                            x.CreatedDate >= weekStart &&
+                            x.CreatedDate < weekEndExclusive)
+                        .SumAsync(x => (decimal?)x.ExpenseAmount) ?? 0m;
+                }
+
+                // ==========================================
+                // 11. NEW: WEEKLY EXPENSE
+                // ==========================================
+                decimal weekExpense = 0m;
+
+                if (fullAccess)
+                {
+                    weekExpense = await _context.SpentAmounts
+                        .Where(x =>
+                            x.OrganizationId == organizationId &&
+                            x.IsActive &&
+                            x.Date >= weekStart &&
+                            x.Date < weekEndExclusive)
+                        .SumAsync(x => (decimal?)x.Amount) ?? 0m;
+                }
+                else
+                {
+                    weekExpense = await _context.SpentAmounts
+                        .Where(x =>
+                            x.OrganizationId == organizationId &&
+                            x.IsActive &&
+                            x.employee_id == employeeId &&
+                            x.Date >= weekStart &&
+                            x.Date < weekEndExclusive)
+                        .SumAsync(x => (decimal?)x.Amount) ?? 0m;
+                }
+
+                // ==========================================
+                // 12. BALANCE
+                //    EXISTING + NEW WEEK BALANCE
                 // ==========================================
                 var monthBalance = monthReceived - monthExpense;
                 var yearBalance = yearReceived - yearExpense;
 
+                var weekBalance = weekReceived - weekExpense;
+
                 // ==========================================
-                // 10. RESPONSE
+                // 13. RESPONSE
+                //    EXISTING FIELDS PRESERVED
                 // ==========================================
                 return Ok(new
                 {
                     success = true,
 
-                    // Company Expense role from portal_roles
                     role = role,
-
                     organizationId = organizationId,
 
                     employeeId = isAdmin
@@ -12325,6 +15257,7 @@ Local Expense Claim Portal
 
                     fullAccess = fullAccess,
 
+                    // Existing Month / Year summary
                     MonthAdvance = monthReceived,
                     YearAdvance = yearReceived,
 
@@ -12332,7 +15265,16 @@ Local Expense Claim Portal
                     YearSpent = yearExpense,
 
                     MonthBalance = monthBalance,
-                    YearBalance = yearBalance
+                    YearBalance = yearBalance,
+
+                    // New Current Week summary
+                    WeekAdvance = weekReceived,
+                    WeekSpent = weekExpense,
+                    WeekBalance = weekBalance,
+
+                    // Current week dates
+                    WeekStart = weekStart,
+                    WeekEnd = weekEndExclusive.AddDays(-1)
                 });
             }
             catch (Exception ex)
@@ -12346,7 +15288,9 @@ Local Expense Claim Portal
             }
         }
 
-      
+
+
+
         [Authorize]
         [HttpGet("spent")]
         public async Task<IActionResult> GetSpents()
@@ -12678,115 +15622,7 @@ Local Expense Claim Portal
         }
 
 
-        // employee and all are can delete spent recards api 
-
-        //[Authorize]
-        //[HttpDelete("spent/{id}")]
-        //public async Task<IActionResult> DeleteSpent(int id)
-        //{
-        //    try
-        //    {
-        //        // ==========================================
-        //        // 1. VALIDATE ID
-        //        // ==========================================
-
-        //        if (id <= 0)
-        //        {
-        //            return BadRequest(new
-        //            {
-        //                success = false,
-        //                message = "Invalid spent ID."
-        //            });
-        //        }
-
-        //        // ==========================================
-        //        // 2. GET ORGANIZATION FROM JWT
-        //        // ==========================================
-
-        //        var organizationId = GetOrganizationId();
-
-        //        if (organizationId <= 0)
-        //        {
-        //            return Unauthorized(new
-        //            {
-        //                success = false,
-        //                message = "OrganizationId not found in token."
-        //            });
-        //        }
-
-        //        // ==========================================
-        //        // 3. GET EMPLOYEE ID FROM JWT
-        //        // ==========================================
-
-        //        var empIdClaim = User.FindFirst("EmpId")?.Value;
-
-        //        if (!int.TryParse(empIdClaim, out int employeeId) ||
-        //            employeeId <= 0)
-        //        {
-        //            return Unauthorized(new
-        //            {
-        //                success = false,
-        //                message = "EmployeeId not found in token."
-        //            });
-        //        }
-
-        //        // ==========================================
-        //        // 4. FIND OWN ACTIVE SPENT RECORD
-        //        //    Organization + Employee based
-        //        // ==========================================
-
-        //        var spent = await _context.SpentAmounts
-        //            .FirstOrDefaultAsync(x =>
-        //                x.Id == id &&
-        //                x.employee_id == employeeId &&
-        //                x.OrganizationId == organizationId &&
-        //                x.IsActive);
-
-        //        if (spent == null)
-        //        {
-        //            return NotFound(new
-        //            {
-        //                success = false,
-        //                message =
-        //                    "Spent record not found or you are not authorized to delete it."
-        //            });
-        //        }
-
-        //        // ==========================================
-        //        // 5. SOFT DELETE
-        //        // ==========================================
-
-        //        spent.IsActive = false;
-
-        //        await _context.SaveChangesAsync();
-
-        //        // ==========================================
-        //        // 6. RESPONSE
-        //        // ==========================================
-
-        //        return Ok(new
-        //        {
-        //            success = true,
-        //            message = "Spent deleted successfully.",
-        //            data = new
-        //            {
-        //                id = spent.Id,
-        //                employeeId = spent.employee_id,
-        //                organizationId = spent.OrganizationId,
-        //                isActive = spent.IsActive
-        //            }
-        //        });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return StatusCode(500, new
-        //        {
-        //            success = false,
-        //            message = "Error while deleting spent.",
-        //            error = ex.InnerException?.Message ?? ex.Message
-        //        });
-        //    }
-        //}
+     
 
         ///-------Accees Controll Api -----///
 
@@ -12889,142 +15725,7 @@ Local Expense Claim Portal
             }
         }
 
-    //    [Authorize]
-    //    [HttpPut("roles/{roleId}/permission")]
-    //    public async Task<IActionResult> UpdateRolePermission(
-    //int roleId,
-    //[FromBody] CreatePermissionDto model)
-    //    {
-    //        try
-    //        {
-    //            // ==========================================
-    //            // 1. Validate request
-    //            // ==========================================
-
-    //            if (model == null)
-    //            {
-    //                return BadRequest(new
-    //                {
-    //                    success = false,
-    //                    message = "Permission data is required."
-    //                });
-    //            }
-
-    //            // ==========================================
-    //            // 2. Get OrganizationId from JWT
-    //            // ==========================================
-
-    //            var orgIdClaim = User.FindFirst("Org_Id")?.Value;
-
-    //            if (string.IsNullOrEmpty(orgIdClaim))
-    //            {
-    //                return Unauthorized(new
-    //                {
-    //                    success = false,
-    //                    message = "Org_Id not found in token."
-    //                });
-    //            }
-
-    //            if (!int.TryParse(orgIdClaim, out int organizationId))
-    //            {
-    //                return Unauthorized(new
-    //                {
-    //                    success = false,
-    //                    message = "Invalid Org_Id in token."
-    //                });
-    //            }
-
-    //            // ==========================================
-    //            // 3. Check Role exists in this organization
-    //            // ==========================================
-
-    //            var role = await _context.RoleMasters
-    //                .FirstOrDefaultAsync(x =>
-    //                    x.RoleId == roleId &&
-    //                    x.OrganizationId == organizationId &&
-    //                    x.IsActive);
-
-    //            if (role == null)
-    //            {
-    //                return NotFound(new
-    //                {
-    //                    success = false,
-    //                    message = "Role not found."
-    //                });
-    //            }
-
-    //            // ==========================================
-    //            // 4. Find Company Expense Access
-    //            // ==========================================
-
-    //            var access = await _context.CompanyexpenseAccesses
-    //                .FirstOrDefaultAsync(x =>
-    //                    x.OrganizationId == organizationId &&
-    //                    x.RoleId == roleId);
-
-    //            // ==========================================
-    //            // 5. If access row doesn't exist → create
-    //            // ==========================================
-
-    //            if (access == null)
-    //            {
-    //                access = new CompanyexpenseAccesses
-    //                {
-    //                    OrganizationId = organizationId,
-    //                    RoleId = roleId,
-    //                    Action = model.Action,
-    //                    IsActive = true,
-    //                    CreatedDate = DateTime.Now
-    //                };
-
-    //                _context.CompanyexpenseAccesses.Add(access);
-    //            }
-    //            else
-    //            {
-    //                // ==========================================
-    //                // 6. Existing row → update permission
-    //                // ==========================================
-
-    //                access.Action = model.Action;
-    //                access.IsActive = true;
-    //            }
-
-    //            // ==========================================
-    //            // 7. Save
-    //            // ==========================================
-
-    //            await _context.SaveChangesAsync();
-
-    //            // ==========================================
-    //            // 8. Response
-    //            // ==========================================
-
-    //            return Ok(new
-    //            {
-    //                success = true,
-    //                message = "Company Expense permission updated successfully.",
-    //                data = new
-    //                {
-    //                    roleId = role.RoleId,
-    //                    roleName = role.RoleName,
-    //                    organizationId = organizationId,
-    //                    action = model.Action,
-    //                    accessType = model.Action
-    //                        ? "Limited Access"
-    //                        : "Full Access"
-    //                }
-    //            });
-    //        }
-    //        catch (Exception ex)
-    //        {
-    //            return StatusCode(500, new
-    //            {
-    //                success = false,
-    //                message = "Error while updating role permission.",
-    //                error = ex.Message
-    //            });
-    //        }
-    //    }
+  
 
         [Authorize]
         [HttpPut("roles/{roleId}/permission")]
@@ -13307,140 +16008,7 @@ Local Expense Claim Portal
             }
         }
 
-        //[Authorize]
-        //[HttpGet("spent_Access")]
-        //public async Task<IActionResult> SpentAccess()
-        //{
-        //    try
-        //    {
-        //        // =========================================
-        //        // 1. OrganizationId from JWT
-        //        // =========================================
-        //        var organizationId = GetOrganizationId();
-
-        //        // =========================================
-        //        // 2. Role from JWT
-        //        // =========================================
-        //        var role = User.FindFirst(ClaimTypes.Role)?.Value;
-
-        //        if (string.IsNullOrWhiteSpace(role))
-        //        {
-        //            return Unauthorized(new
-        //            {
-        //                success = false,
-        //                message = "Role not found in token."
-        //            });
-        //        }
-
-        //        // =========================================
-        //        // 3. Check Admin
-        //        // =========================================
-        //        bool isAdmin =
-        //            role.Equals("Admin", StringComparison.OrdinalIgnoreCase) ||
-        //            role.Equals("SuperAdmin", StringComparison.OrdinalIgnoreCase);
-
-        //        int loggedInEmployeeId = 0;
-
-        //        // =========================================
-        //        // 4. EmpId ONLY for non-admin
-        //        // =========================================
-        //        if (!isAdmin)
-        //        {
-        //            var employeeIdClaim = User.FindFirst("EmpId")?.Value;
-
-        //            if (!int.TryParse(employeeIdClaim, out loggedInEmployeeId) ||
-        //                loggedInEmployeeId <= 0)
-        //            {
-        //                return Unauthorized(new
-        //                {
-        //                    success = false,
-        //                    message = "EmployeeId not found in token."
-        //                });
-        //            }
-        //        }
-
-        //        // =========================================
-        //        // 5. Call SP
-        //        // =========================================
-
-        //        var spent = await _context.SpentDetails
-        //            .FromSqlRaw(
-        //                @"EXEC dbo.get_spent_details_with_access
-        //            @EmployeeId,
-        //            @OrganizationId,
-        //            @Role",
-        //                new SqlParameter("@EmployeeId", loggedInEmployeeId),
-        //                new SqlParameter("@OrganizationId", organizationId),
-        //                new SqlParameter("@Role", role)
-        //            )
-        //            .ToListAsync();
-
-        //        // =========================================
-        //        // 6. Response
-        //        // =========================================
-
-        //        return Ok(new
-        //        {
-        //            success = true,
-
-        //            fullAccess = isAdmin,
-
-        //            role = role,
-
-        //            organizationId = organizationId,
-
-        //            employeeId = isAdmin
-        //                ? (int?)null
-        //                : loggedInEmployeeId,
-
-        //            spentDetails = spent
-        //        });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return StatusCode(500, new
-        //        {
-        //            success = false,
-        //            message = "Error while fetching spent access details.",
-        //            error = ex.Message
-        //        });
-        //    }
-        //}
-
-        //[Authorize]
-        //[HttpDelete("spent/{id}")]
-        //public async Task<IActionResult> DeleteSpent(int id)
-        //{
-        //    try
-        //    {
-        //        var organizationId = GetOrganizationId();
-
-        //        var data = await _context.SpentAmounts
-        //            .FirstOrDefaultAsync(x =>
-        //                x.Id == id &&
-        //                x.OrganizationId == organizationId);
-
-        //        if (data == null)
-        //            return NotFound("Spent record not found");
-
-        //        data.IsActive = false;
-
-        //        await _context.SaveChangesAsync();
-
-        //        return Ok(new
-        //        {
-        //            message = "Spent record deleted successfully"
-        //        });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return StatusCode(500, new
-        //        {
-        //            Message = "An error occurred while deleting the spent record.",
-        //            Error = ex.Message
-        //        });
-        //    }
-        //}
+      
 
         [Authorize]
         [HttpGet("spent_Access")]

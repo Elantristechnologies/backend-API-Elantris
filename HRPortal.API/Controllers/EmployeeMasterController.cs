@@ -46,7 +46,6 @@ namespace HRPortal.API.Controllers
 
 
 
-
         [AllowAnonymous]
         [HttpPost("login")]
         public async Task<IActionResult> Login(
@@ -194,6 +193,14 @@ namespace HRPortal.API.Controllers
 
 
                 // ==========================================
+                // DEPARTMENT VARIABLES
+                // ==========================================
+
+                List<int> departmentIds = new();
+                List<string> departmentNames = new();
+
+
+                // ==========================================
                 // 8. MODULE VARIABLES
                 // ==========================================
 
@@ -209,13 +216,8 @@ namespace HRPortal.API.Controllers
 
 
                 // ==========================================
-                // 9. FUTURE REPORTING MANAGER VARIABLES
+                // 9. REPORTING MANAGER VARIABLES
                 // ==========================================
-                //
-                // Ippo DB-la reporting manager column illa.
-                // Future-la company_users-la add pannumbothu
-                // inga values assign pannalam.
-                //
 
                 int? reportingManagerId = null;
 
@@ -260,6 +262,39 @@ namespace HRPortal.API.Controllers
 
 
                     // --------------------------------------
+                    // DEPARTMENT IDs AND NAMES
+                    // --------------------------------------
+
+                    if (!string.IsNullOrWhiteSpace(
+                            companyUser.DepartmentId))
+                    {
+                        departmentIds =
+                            companyUser.DepartmentId
+                                .Split(
+                                    ',',
+                                    StringSplitOptions.RemoveEmptyEntries |
+                                    StringSplitOptions.TrimEntries)
+                                .Where(x => int.TryParse(x, out _))
+                                .Select(int.Parse)
+                                .Distinct()
+                                .ToList();
+
+                        if (departmentIds.Count > 0)
+                        {
+                            departmentNames =
+                                await _commonContext.Departments
+                                    .AsNoTracking()
+                                    .Where(d =>
+                                        d.OrgId == organizationId &&
+                                        departmentIds.Contains(d.Id))
+                                    .OrderBy(d => d.Id)
+                                    .Select(d => d.DepartmentName)
+                                    .ToListAsync();
+                        }
+                    }
+
+
+                    // --------------------------------------
                     // GLOBAL ROLE
                     // company_users.PrimaryTitle
                     // --------------------------------------
@@ -298,8 +333,7 @@ namespace HRPortal.API.Controllers
                                             property.Name;
 
                                         string? portalRole =
-                                            property.Value
-                                                .GetString();
+                                            property.Value.GetString();
 
                                         if (!string.IsNullOrWhiteSpace(
                                                 portalRole))
@@ -307,12 +341,11 @@ namespace HRPortal.API.Controllers
                                             portalRoles[portal] =
                                                 portalRole;
 
-                                            if (!allowedPortals
-                                                    .Any(x =>
-                                                        x.Equals(
-                                                            portal,
-                                                            StringComparison
-                                                                .OrdinalIgnoreCase)))
+                                            if (!allowedPortals.Any(x =>
+                                                    x.Equals(
+                                                        portal,
+                                                        StringComparison
+                                                            .OrdinalIgnoreCase)))
                                             {
                                                 allowedPortals.Add(
                                                     portal);
@@ -322,13 +355,13 @@ namespace HRPortal.API.Controllers
                                 }
                             }
                         }
+
                         catch
                         {
                             // Invalid portal_roles JSON
                         }
                     }
                 }
-
 
                 // ==========================================
                 // 11. ADMIN USER
@@ -450,34 +483,22 @@ namespace HRPortal.API.Controllers
                 var claims =
                     new List<Claim>
                     {
-                // ------------------------------
                 // Subject / Email
-                // ------------------------------
-
                 new Claim(
                     JwtRegisteredClaimNames.Sub,
                     email),
 
-                // ------------------------------
                 // User ID
-                // ------------------------------
-
                 new Claim(
                     "userId",
                     userId.ToString()),
 
-                // ------------------------------
                 // Organization
-                // ------------------------------
-
                 new Claim(
                     "orgId",
                     organizationId.ToString()),
 
-                // ------------------------------
                 // GLOBAL ROLE
-                // ------------------------------
-
                 new Claim(
                     "role",
                     role),
@@ -486,10 +507,7 @@ namespace HRPortal.API.Controllers
                     ClaimTypes.Role,
                     role),
 
-                // ------------------------------
                 // Name
-                // ------------------------------
-
                 new Claim(
                     ClaimTypes.Name,
                     finalUserName),
@@ -498,26 +516,17 @@ namespace HRPortal.API.Controllers
                     "name",
                     finalUserName),
 
-                // ------------------------------
                 // Email
-                // ------------------------------
-
                 new Claim(
                     ClaimTypes.Email,
                     email),
 
-                // ------------------------------
                 // DB TYPE
-                // ------------------------------
-
                 new Claim(
                     "dbType",
                     "SQL Server"),
 
-                // ------------------------------
                 // APPROVAL STATUS
-                // ------------------------------
-
                 new Claim(
                     "isApproved",
                     "true")
@@ -530,7 +539,6 @@ namespace HRPortal.API.Controllers
 
                 if (empId > 0)
                 {
-                    // Common token style
                     claims.Add(
                         new Claim(
                             "emp_id",
@@ -542,6 +550,22 @@ namespace HRPortal.API.Controllers
                             empId.ToString()));
                 }
 
+                // ==========================================
+                // 16A.1 DEPARTMENT IDs AND NAMES IN JWT
+                // ==========================================
+
+                if (departmentIds != null && departmentIds.Count > 0)
+                {
+                    claims.Add(
+                        new Claim(
+                            "department_id",
+                            JsonSerializer.Serialize(departmentIds)));
+
+                    claims.Add(
+                        new Claim(
+                            "department_name",
+                            JsonSerializer.Serialize(departmentNames)));
+                }
 
                 // ==========================================
                 // 16B. EMPLOYEE CODE
@@ -579,10 +603,6 @@ namespace HRPortal.API.Controllers
                 // ==========================================
                 // 16D. ALLOWED PORTALS
                 // ==========================================
-                //
-                // Same claim multiple times.
-                // JWT decoder can show this as an array.
-                //
 
                 foreach (var portal in
                          allowedPortals.Distinct(
@@ -620,24 +640,6 @@ namespace HRPortal.API.Controllers
                             "company",
                             companyName));
                 }
-
-
-                // ==========================================
-                // 16G. FUTURE REPORTING MANAGER
-                // ==========================================
-                //
-                // Ippo reporting manager DB column illa.
-                //
-                // Future-la company_users-la add pannumbothu:
-                //
-                // claims.Add(new Claim(
-                //     "ReportingManagerId",
-                //     reportingManagerId.ToString()));
-                //
-                // etc.
-                //
-                // Ippo add panna vendam.
-                // ==========================================
 
 
                 // ==========================================
@@ -706,38 +708,27 @@ namespace HRPortal.API.Controllers
 
                     token = jwtToken,
 
-                    userId =
-                        userId,
+                    userId = userId,
 
-                    empId =
-                        empId,
+                    empId = empId,
 
-                    empCode =
-                        empCode,
+                    empCode = empCode,
 
-                    userName =
-                        finalUserName,
+                    userName = finalUserName,
 
-                    email =
-                        email,
+                    email = email,
 
-                    role =
-                        role,
+                    role = role,
 
-                    companyName =
-                        companyName,
+                    companyName = companyName,
 
-                    orgId =
-                        organizationId,
+                    orgId = organizationId,
 
-                    allowedModules =
-                        allowedModules,
+                    allowedModules = allowedModules,
 
-                    allowedPortals =
-                        allowedPortals,
+                    allowedPortals = allowedPortals,
 
-                    portalRoles =
-                        portalRoles,
+                    portalRoles = portalRoles,
 
 
                     // --------------------------------------
@@ -755,6 +746,12 @@ namespace HRPortal.API.Controllers
 
                         EmailId = email,
 
+                        // NEW: Department IDs
+                        DepartmentId = departmentIds,
+
+                        // NEW: Department names
+                        DepartmentName = departmentNames,
+
                         ReportingManagerId =
                             reportingManagerId,
 
@@ -765,8 +762,7 @@ namespace HRPortal.API.Controllers
                             reportingManagerName
                     },
 
-                    message =
-                        "Login successful"
+                    message = "Login successful"
                 });
             }
             catch (Exception ex)
@@ -774,18 +770,13 @@ namespace HRPortal.API.Controllers
                 return StatusCode(500, new
                 {
                     success = false,
-
-                    message =
-                        "An error occurred during login.",
-
-                    error =
-                        ex.InnerException?.InnerException?.Message
-                        ?? ex.InnerException?.Message
-                        ?? ex.Message
+                    message = "An error occurred during login.",
+                    error = ex.Message,
+                    innerError = ex.InnerException?.Message,
+                    stackTrace = ex.StackTrace
                 });
             }
         }
-
         private async Task<IActionResult> CreateCommonLoginResponseAsync(
     CompanyUser? companyUser,
     UsersMaster? adminUser)
@@ -1219,183 +1210,7 @@ namespace HRPortal.API.Controllers
         }
 
 
-        //[AllowAnonymous]
-        //[HttpPost("login")]
-        //public async Task<IActionResult> Login(
-        //    string userName,
-        //    string password,
-        //    int checkType)
-        //{
-        //    try
-        //    {
-        //        // ==========================================
-        //        // 1. LOGIN
-        //        // EXISTING DATABASE / EXISTING SP
-        //        // ==========================================
-
-        //        var employees = await _context.LoginResponseDtos
-        //            .FromSqlRaw(
-        //                "EXEC dbo.sp_Login @UserName, @Password",
-        //                new SqlParameter("@UserName", userName),
-        //                new SqlParameter("@Password", password)
-        //            )
-        //            .ToListAsync();
-
-        //        var employee = employees.FirstOrDefault();
-
-        //        // ==========================================
-        //        // INVALID LOGIN
-        //        // ==========================================
-
-        //        if (employee == null || employee.IsSuccess == 0)
-        //        {
-        //            return Unauthorized(new
-        //            {
-        //                success = false,
-        //                message = "Invalid Username or Password"
-        //            });
-        //        }
-
-        //        // ==========================================
-        //        // 2. ROLE
-        //        // ==========================================
-
-        //        string role = employee.Role ?? "Employee";
-
-        //        // ==========================================
-        //        // 3. GET MODULES
-        //        // ORGANIZATION BASED ONLY
-        //        // ==========================================
-
-        //        var modules = new List<ModuleResponseDto>();
-
-        //        if (employee.orgId.HasValue &&
-        //            employee.orgId.Value > 0)
-        //        {
-        //            modules = await _context.OrganizationModules
-        //                .Where(x =>
-        //                    x.OrganizationId == employee.orgId.Value &&
-        //                    x.IsActive)
-        //                .Join(
-        //                    _context.ModuleMasters
-        //                        .Where(x => x.IsActive),
-        //                    om => om.ModuleId,
-        //                    mm => mm.ModuleId,
-        //                    (om, mm) => new ModuleResponseDto
-        //                    {
-        //                        ModuleId = mm.ModuleId,
-        //                        ModuleCode = mm.ModuleCode,
-        //                        ModuleName = mm.ModuleName
-        //                    })
-        //                .OrderBy(x => x.ModuleId)
-        //                .ToListAsync();
-        //        }
-
-        //        // ==========================================
-        //        // 4. JWT TOKEN
-        //        // ==========================================
-
-        //        var token = GenerateJwtToken(
-        //            employee.EmailId,
-        //            role,
-        //            employee.orgId,
-        //            employee.EmpId
-        //        );
-
-        //        // ==========================================
-        //        // 5. ORGANIZATION SETUP
-        //        // ==========================================
-
-        //        bool isOrganizationSetupRequired =
-        //            employee.orgId == null;
-
-        //        // ==========================================
-        //        // 6. PROFILE SETUP
-        //        // ==========================================
-
-        //        bool isProfileSetupRequired =
-        //            role != "Admin" &&
-        //            !role.Equals(
-        //                "SuperAdmin",
-        //                StringComparison.OrdinalIgnoreCase) &&
-        //            (
-        //                string.IsNullOrEmpty(employee.Phone) ||
-        //                employee.DepartmentId == null ||
-        //                employee.DesignationId == null ||
-        //                employee.DateOfJoining == null
-        //            );
-
-        //        // ==========================================
-        //        // 7. LOGIN RESPONSE
-        //        // ==========================================
-
-        //        return Ok(new
-        //        {
-        //            success = true,
-
-        //            message = "Login successful",
-
-        //            role = role,
-
-        //            token = token,
-
-        //            IsOrganizationSetupRequired =
-        //                isOrganizationSetupRequired,
-
-        //            IsProfileSetupRequired =
-        //                isProfileSetupRequired,
-
-        //            // Organization based modules
-        //            modules = modules,
-
-        //            employee = new
-        //            {
-        //                employee.UserId,
-        //                employee.UserName,
-
-        //                employee.EmpId,
-        //                employee.EmployeeCode,
-
-        //                employee.FullName,
-        //                employee.EmailId,
-        //                employee.Phone,
-
-        //                employee.RoleId,
-        //                employee.Role,
-
-        //                employee.DepartmentId,
-        //                employee.DepartmentName,
-
-        //                employee.DesignationId,
-        //                employee.DesignationName,
-
-        //                employee.ReportingManagerId,
-        //                employee.ReportingManager_code,
-        //                employee.ReportingManager_name,
-
-        //                employee.DateOfJoining,
-        //                employee.CategoryId,
-        //                employee.ConfirmationDate,
-        //                employee.GradeId,
-
-        //                employee.Gender,
-        //                employee.MaritalStatus,
-
-        //                employee.orgId
-        //            }
-        //        });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        return StatusCode(500, new
-        //        {
-        //            success = false,
-        //            message = "An error occurred during login.",
-        //            error = ex.InnerException?.Message ?? ex.Message
-        //        });
-        //    }
-        //}
-
+  
 
 
         private string GenerateJwtToken(
@@ -1851,45 +1666,35 @@ namespace HRPortal.API.Controllers
         {
             try
             {
-                // ==========================================
-                // GET ORGANIZATION ID FROM JWT
-                // ==========================================
-
+                // Step 1: Get OrganizationId from logged-in user's JWT
                 var organizationId = GetOrganizationId();
 
-                // ==========================================
-                // GET MODULES
-                // Organization_Module + Module_Master
-                // ==========================================
-
-                var modules = await _context.OrganizationModules
-                    .Where(x =>
-                        x.OrgId == organizationId &&
-                        x.IsActive)
+                // Step 2: Fetch active modules assigned to the organization
+                var modules = await _commonContext.OrganizationModules
+                    .Where(om =>
+                        om.OrgId == organizationId &&
+                        om.IsActive == true)
                     .Join(
-                        _context.ModuleMasters,
-                        om => om.Id,
-                        mm => mm.ModuleId,
+                        _commonContext.ModuleMasters,
+                        om => om.ModuleCode,
+                        mm => mm.ModuleCode,
                         (om, mm) => new
                         {
                             moduleId = mm.ModuleId,
                             moduleCode = mm.ModuleCode,
                             moduleName = mm.ModuleName,
                             isActive = om.IsActive,
-                            createdDate = om.AssignedDate
+                            assignedDate = om.AssignedDate
                         })
-                    .Where(x => x.isActive)
                     .OrderBy(x => x.moduleId)
                     .ToListAsync();
 
-                // ==========================================
-                // RESPONSE
-                // ==========================================
-
+                // Step 3: Return response
                 return Ok(new
                 {
                     success = true,
                     organizationId = organizationId,
+                    totalModules = modules.Count,
                     modules = modules
                 });
             }
@@ -1911,7 +1716,6 @@ namespace HRPortal.API.Controllers
                 });
             }
         }
-
         // HR-ADMIN profile update
         [Authorize]
         [HttpPut("update-profile/{id}")]
@@ -2159,7 +1963,7 @@ namespace HRPortal.API.Controllers
 
                             phone = x.MobileNumber,
 
-                            department = x.Department,
+                            department = x.DepartmentId,
 
                             designation = x.PrimaryTitle,
 

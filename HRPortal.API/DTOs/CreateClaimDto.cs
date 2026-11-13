@@ -4,6 +4,8 @@
     {
         public int EmployeeId { get; set; }
 
+        public int? DepartmentId { get; set; }
+
         public DateTime ClaimMonth { get; set; }
 
         public List<CreateClaimEntryDto> ClaimEntries { get; set; }

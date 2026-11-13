@@ -21,6 +21,8 @@ public class CommonDbContext : DbContext
     public DbSet<ModuleMaster> ModuleMasters { get; set; }
 
     public DbSet<CommonDepartment> Departments { get; set; }
+
+    public DbSet<Branch> Branches { get; set; }
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

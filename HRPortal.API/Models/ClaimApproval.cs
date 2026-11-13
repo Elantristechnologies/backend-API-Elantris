@@ -33,4 +33,6 @@ public class ClaimApproval
     [Column("created_at")]
     public DateTime CreatedAt { get; set; }
 
+    public int? DepartmentApprovalConfigId { get; set; }
+
 }
